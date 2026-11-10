@@ -1,5 +1,7 @@
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
+import { WebSocketServer, WebSocket } from 'ws';
+import type { Server as HttpServer } from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -9,6 +11,184 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ---- Remote guest signaling (Piece 1) ----
+// In-memory invite rooms. A room is created by the host via POST /api/rooms
+// and lives until both peers disconnect. The signaling server only relays
+// WebRTC offer/answer/ICE messages between the two peers — media flows
+// peer-to-peer and never touches this server. No auth in v1.
+
+type SignalingRole = 'host' | 'guest';
+
+interface Room {
+  code: string;
+  host: WebSocket | null;
+  guest: WebSocket | null;
+  hostName?: string;
+  guestName?: string;
+  createdAt: number;
+}
+
+const rooms = new Map<string, Room>();
+const peerMeta = new Map<WebSocket, { roomCode: string; role: SignalingRole }>();
+
+// No lookalike characters (0/O, 1/I) so a code read over the phone is safe.
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+function generateRoomCode(length = 6): string {
+  let code = '';
+  for (let i = 0; i < length; i++) {
+    code += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+  }
+  return code;
+}
+
+function signalingSend(ws: WebSocket, payload: unknown): void {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(payload));
+  }
+}
+
+function signalingSendError(ws: WebSocket, message: string): void {
+  signalingSend(ws, { type: 'error', message });
+}
+
+function detachPeer(
+  ws: WebSocket,
+  meta: { roomCode: string; role: SignalingRole },
+  room: Room
+): void {
+  if (meta.role === 'host') {
+    if (room.host === ws) room.host = null;
+  } else if (room.guest === ws) {
+    room.guest = null;
+  }
+  peerMeta.delete(ws);
+  const other = meta.role === 'host' ? room.guest : room.host;
+  if (other) {
+    signalingSend(other, { type: 'peer-left', role: meta.role });
+  }
+  if (!room.host && !room.guest) {
+    rooms.delete(room.code);
+  }
+}
+
+function attachSignaling(httpServer: HttpServer): void {
+  // path '/ws' so Vite's dev HMR websocket is untouched.
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+
+  // Heartbeat: drop dead sockets so a closed tab does not linger in a room.
+  const heartbeat = setInterval(() => {
+    wss.clients.forEach((ws) => {
+      const socket = ws as WebSocket & { isAlive?: boolean };
+      if (socket.isAlive === false) {
+        ws.terminate();
+        return;
+      }
+      socket.isAlive = false;
+      ws.ping();
+    });
+  }, 30000);
+  wss.on('close', () => clearInterval(heartbeat));
+
+  wss.on('connection', (ws: WebSocket) => {
+    const socket = ws as WebSocket & { isAlive?: boolean };
+    socket.isAlive = true;
+    ws.on('pong', () => {
+      socket.isAlive = true;
+    });
+
+    ws.on('message', (raw) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        signalingSendError(ws, 'Invalid message format.');
+        return;
+      }
+      if (!msg || typeof msg.type !== 'string') {
+        signalingSendError(ws, 'Invalid message format.');
+        return;
+      }
+
+      if (msg.type === 'join') {
+        const room = rooms.get(msg.room);
+        if (!room) {
+          signalingSendError(
+            ws,
+            'Room not found. The invite link may be expired — ask the host for a new one.'
+          );
+          return;
+        }
+        if (msg.role !== 'host' && msg.role !== 'guest') {
+          signalingSendError(ws, 'Invalid role.');
+          return;
+        }
+        const existing = msg.role === 'host' ? room.host : room.guest;
+        if (existing && existing.readyState === WebSocket.OPEN) {
+          signalingSendError(
+            ws,
+            msg.role === 'host'
+              ? 'This room already has a host.'
+              : 'A guest is already connected to this room.'
+          );
+          return;
+        }
+        if (msg.role === 'host') {
+          room.host = ws;
+          room.hostName = typeof msg.name === 'string' ? msg.name : undefined;
+        } else {
+          room.guest = ws;
+          room.guestName = typeof msg.name === 'string' ? msg.name : undefined;
+        }
+        peerMeta.set(ws, { roomCode: room.code, role: msg.role });
+        signalingSend(ws, { type: 'joined', room: room.code, role: msg.role });
+        const other = msg.role === 'host' ? room.guest : room.host;
+        if (other) {
+          signalingSend(other, { type: 'peer-joined', role: msg.role, name: msg.name });
+        }
+        return;
+      }
+
+      const meta = peerMeta.get(ws);
+      if (!meta) {
+        signalingSendError(ws, 'Join a room first.');
+        return;
+      }
+      const room = rooms.get(meta.roomCode);
+      if (!room) {
+        signalingSendError(ws, 'Room no longer exists.');
+        return;
+      }
+
+      if (msg.type === 'leave') {
+        detachPeer(ws, meta, room);
+        return;
+      }
+
+      if (msg.type === 'offer' || msg.type === 'answer' || msg.type === 'ice-candidate') {
+        const other = meta.role === 'host' ? room.guest : room.host;
+        if (!other || other.readyState !== WebSocket.OPEN) {
+          signalingSendError(ws, 'The other side has not joined yet.');
+          return;
+        }
+        signalingSend(other, { ...msg, from: meta.role });
+        return;
+      }
+
+      signalingSendError(ws, `Unknown message type: ${msg.type}`);
+    });
+
+    ws.on('close', () => {
+      const meta = peerMeta.get(ws);
+      if (!meta) return;
+      const room = rooms.get(meta.roomCode);
+      if (room) {
+        detachPeer(ws, meta, room);
+      }
+    });
+  });
+}
 
 async function startServer() {
   const app = express();
@@ -33,6 +213,17 @@ async function startServer() {
       hasApiKey: Boolean(process.env.GEMINI_API_KEY),
       timestamp: new Date().toISOString(),
     });
+  });
+
+  // Create a remote-guest invite room (Piece 1). The host calls this when
+  // they tap "Invite Remote Guest"; the returned code goes in the guest link.
+  app.post('/api/rooms', (_req: Request, res: Response) => {
+    let code = generateRoomCode();
+    while (rooms.has(code)) {
+      code = generateRoomCode();
+    }
+    rooms.set(code, { code, host: null, guest: null, createdAt: Date.now() });
+    res.json({ code });
   });
 
   // Post-recording Gemini AI Show Notes generation endpoint
@@ -201,9 +392,12 @@ Generate a comprehensive, high-engagement set of show notes in structured JSON a
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`PodCraft Studio server listening on http://0.0.0.0:${PORT}`);
   });
+
+  // WebSocket signaling for remote guests (path /ws).
+  attachSignaling(httpServer);
 }
 
 startServer().catch((err) => {

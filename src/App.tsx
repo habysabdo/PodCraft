@@ -27,6 +27,7 @@ import {
   ReactionMediaState,
 } from './types/studio';
 import { useDevices } from './hooks/useDevices';
+import { useRemoteGuest } from './hooks/useRemoteGuest';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { audioStudio } from './utils/audioProcessor';
 import { BroadcastCanvasView } from './components/BroadcastCanvasView';
@@ -35,6 +36,8 @@ import { RecordingBar } from './components/RecordingBar';
 import { RecordingReviewModal } from './components/RecordingReviewModal';
 import { ShowNotesModal } from './components/ShowNotesModal';
 import { ReactionMediaControls } from './components/ReactionMediaControls';
+import { GuestJoinView } from './components/GuestJoinView';
+import { RemoteGuestInvite } from './components/RemoteGuestInvite';
 import { detectAndParseMediaUrl } from './utils/urlDetector';
 
 const DEFAULT_FILTERS: VideoFilterSettings = {
@@ -68,6 +71,16 @@ export default function App() {
     acquireVideoStream,
     acquireAudioStream,
   } = useDevices();
+
+  // Guest mode: ?guest=<code> renders the guest join screen instead of the
+  // studio (the early return sits just before the studio JSX below).
+  const [guestCode] = useState<string | null>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('guest');
+    } catch {
+      return null;
+    }
+  });
 
   // Studio Branding & Lower Thirds
   const [branding, setBranding] = useState<StudioBranding>({
@@ -113,6 +126,73 @@ export default function App() {
   const guestVideoStreamRef = useRef<MediaStream | null>(null);
   const hostAudioStreamRef = useRef<MediaStream | null>(null);
   const guestAudioStreamRef = useRef<MediaStream | null>(null);
+
+  // ---- Remote guest (Piece 1) ----
+  // When a remote guest is live, their stream owns the Guest channel and the
+  // local guest hardware is stopped. When they leave, the local device
+  // setup below re-runs (guestRestoreBump) so the solo studio is untouched.
+  const [inviteRoomCode, setInviteRoomCode] = useState<string | null>(null);
+  const [inviteActive, setInviteActive] = useState(false);
+  const [remoteGuestStream, setRemoteGuestStream] = useState<MediaStream | null>(null);
+  const [guestRestoreBump, setGuestRestoreBump] = useState(0);
+  const remoteGuestStreamRef = useRef<MediaStream | null>(null);
+
+  const remoteGuest = useRemoteGuest({
+    roomCode: inviteRoomCode,
+    enabled: inviteActive,
+    onRemoteStream: (stream, name) => {
+      if (stream) {
+        remoteGuestStreamRef.current = stream;
+        setRemoteGuestStream(stream);
+        if (name) {
+          setGuestConfig((prev) => ({ ...prev, name }));
+        }
+        // Free the local guest hardware while the remote feed owns the channel.
+        if (guestVideoStreamRef.current) {
+          guestVideoStreamRef.current.getTracks().forEach((t) => t.stop());
+          guestVideoStreamRef.current = null;
+        }
+        if (guestAudioStreamRef.current) {
+          guestAudioStreamRef.current.getTracks().forEach((t) => t.stop());
+          guestAudioStreamRef.current = null;
+        }
+      } else {
+        remoteGuestStreamRef.current = null;
+        setRemoteGuestStream(null);
+        setGuestRestoreBump((b) => b + 1);
+      }
+    },
+  });
+
+  // Attach a remote guest stream to the existing guest channel: the hidden
+  // guest video element feeds the canvas, and the DSP audio graph gets the
+  // remote audio — VU meter, filters, composite and recording just work.
+  useEffect(() => {
+    if (remoteGuestStream) {
+      if (guestVideoRef.current) {
+        guestVideoRef.current.srcObject = remoteGuestStream;
+        guestVideoRef.current.play().catch(() => {});
+      }
+      audioStudio.attachChannelStream('guest', remoteGuestStream, guestConfig.audioSettings);
+    }
+  }, [remoteGuestStream]);
+
+  const createInvite = async () => {
+    try {
+      const res = await fetch('/api/rooms', { method: 'POST' });
+      const data = await res.json();
+      if (!data?.code) throw new Error('No room code returned');
+      setInviteRoomCode(data.code);
+      setInviteActive(true);
+    } catch (err) {
+      console.warn('Failed to create invite room:', err);
+    }
+  };
+
+  const endInvite = () => {
+    setInviteActive(false);
+    setInviteRoomCode(null);
+  };
 
   // Reaction Media & Screen Share
   const mediaVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -245,6 +325,9 @@ export default function App() {
     let isCancelled = false;
 
     async function setupGuestVideo() {
+      // A remote guest owns the guest channel — leave its stream alone.
+      if (remoteGuestStreamRef.current) return;
+
       if (guestVideoStreamRef.current) {
         guestVideoStreamRef.current.getTracks().forEach((t) => t.stop());
         guestVideoStreamRef.current = null;
@@ -275,7 +358,7 @@ export default function App() {
     return () => {
       isCancelled = true;
     };
-  }, [guestConfig.videoDeviceId, acquireVideoStream]);
+  }, [guestConfig.videoDeviceId, acquireVideoStream, guestRestoreBump]);
 
   // Sync Host Audio Feed
   useEffect(() => {
@@ -314,6 +397,9 @@ export default function App() {
     let isCancelled = false;
 
     async function setupGuestAudio() {
+      // A remote guest owns the guest channel — leave its stream alone.
+      if (remoteGuestStreamRef.current) return;
+
       if (guestAudioStreamRef.current) {
         guestAudioStreamRef.current.getTracks().forEach((t) => t.stop());
         guestAudioStreamRef.current = null;
@@ -339,7 +425,7 @@ export default function App() {
     return () => {
       isCancelled = true;
     };
-  }, [guestConfig.audioDeviceId, acquireAudioStream]);
+  }, [guestConfig.audioDeviceId, acquireAudioStream, guestRestoreBump]);
 
   // Update DSP settings on active channels
   useEffect(() => {
@@ -825,6 +911,11 @@ export default function App() {
     audioStudio.setMonitoring(next);
   };
 
+  // Guest mode: ?guest=<code> opens the join screen instead of the studio.
+  if (guestCode) {
+    return <GuestJoinView code={guestCode} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#07090e] text-slate-100 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
       {/* Real hardware video elements feeding live decoded frames to canvas compositor */}
@@ -1066,6 +1157,18 @@ export default function App() {
             onOpenReviewModal={() => setShowReviewModal(true)}
             hasRecordedSession={hasRecordedSession}
             transcriptCount={transcriptEntries.length}
+          />
+        </section>
+
+        {/* 2b. Remote Guest Invite */}
+        <section>
+          <RemoteGuestInvite
+            status={remoteGuest.status}
+            roomCode={inviteRoomCode}
+            guestName={remoteGuest.guestName}
+            error={remoteGuest.error}
+            onCreateInvite={createInvite}
+            onEndInvite={endInvite}
           />
         </section>
 
