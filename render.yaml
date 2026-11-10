@@ -1,0 +1,14 @@
+# PodCraft on Render (free tier) — ready to push when Hany picks Render.
+# One-click deploy: Render dashboard → New → Blueprint → pick habysabdo/PodCraft.
+# Note: `tsx` is a devDependency and `npm start` needs it, so the build
+# installs dev deps explicitly (--include=dev); otherwise the service
+# crashes on start when NODE_ENV=production prunes them.
+services:
+  - type: web
+    name: podcraft
+    env: node
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
