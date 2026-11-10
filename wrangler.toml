@@ -1,0 +1,40 @@
+# PodCraft — Cloudflare Worker + Static Assets (production deploy).
+#
+# The frontend (Vite build output in ./dist) and the API/signaling Worker
+# deploy as ONE service from this repo. A Worker script must exist for the
+# dashboard to accept bindings — that was the "Bindings cannot be added to a
+# Worker that only has static assets" error: the first deploy uploaded only
+# the frontend, with no worker script at all.
+#
+# Secrets are set in the Cloudflare dashboard
+# (Workers & Pages → podcraft → Settings → Variables) — NEVER in this file:
+#   GEMINI_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+name = "podcraft"
+main = "src/worker.ts"
+compatibility_date = "2026-11-10"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# Durable Object holding one remote-guest room's signaling state.
+# The Worker routes /ws?room=CODE to the Room instance for that code.
+[durable_objects]
+bindings = [
+  { name = "ROOM", class_name = "Room" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["Room"]
+
+# D1 database — episode records (one row per YouTube publish: title, video
+# link, show notes). Created in the dashboard as "podcraft-db"; the binding
+# name is DB. Dashboard-only bindings are wiped by the next deploy, so this
+# file is the source of truth — if the deploy complains the name does not
+# match, correct database_name here to the real database name.
+[[d1_databases]]
+binding = "DB"
+database_name = "podcraft-db"
+database_id = "3bc995ca-2a0c-45c0-85a6-cebabd522f91"

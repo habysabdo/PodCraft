@@ -18,6 +18,7 @@ import {
   uploadToYouTube,
   type YouTubePrivacy,
 } from '../lib/youtube';
+import type { ShowNotesData } from '../types/studio';
 
 interface YouTubePublishProps {
   /** The finished file to publish (edited export when present, else the original). */
@@ -27,6 +28,8 @@ interface YouTubePublishProps {
   defaultTitle: string;
   /** Prefilled from the AI show-notes summary when available, else empty. */
   defaultDescription: string;
+  /** Full AI show notes for the episode — saved with the publish record. */
+  showNotes?: ShowNotesData | null;
 }
 
 const PRIVACY_OPTIONS: Array<{ value: YouTubePrivacy; label: string }> = [
@@ -37,11 +40,44 @@ const PRIVACY_OPTIONS: Array<{ value: YouTubePrivacy; label: string }> = [
 
 const formatMb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(2);
 
+/**
+ * Save the published episode to D1 (POST /api/episodes) — fire-and-forget.
+ * The video is already live on YouTube when this runs, so a failure here
+ * (no D1 binding yet, offline) must never block or hide the success UI:
+ * it only logs a warning.
+ */
+function saveEpisodeRecord(
+  videoId: string,
+  title: string,
+  privacy: YouTubePrivacy,
+  showNotes: ShowNotesData | null | undefined
+): void {
+  try {
+    void fetch('/api/episodes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        videoId,
+        privacy,
+        showNotes: showNotes ? JSON.stringify(showNotes) : undefined,
+      }),
+    }).catch(() => {
+      console.warn(
+        '[podcraft] Could not save the episode record (episodes database unavailable). The video is still live on YouTube.'
+      );
+    });
+  } catch {
+    // Never let the record-keeping break the success UI.
+  }
+}
+
 export const YouTubePublish: React.FC<YouTubePublishProps> = ({
   file,
   filename,
   defaultTitle,
   defaultDescription,
+  showNotes,
 }) => {
   const [connected, setConnected] = useState<boolean>(() => loadTokens() !== null);
   const [connecting, setConnecting] = useState(false);
@@ -108,6 +144,8 @@ export const YouTubePublish: React.FC<YouTubePublishProps> = ({
       );
       setVideoId(id);
       setUploadState('done');
+      // Record the publish in D1 — fire-and-forget, never blocks the UI.
+      saveEpisodeRecord(id, title, privacy, showNotes);
     } catch (err) {
       if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
         setUploadState('idle');

@@ -77,7 +77,7 @@ export function useRemoteGuest({ roomCode, enabled, onRemoteStream }: UseRemoteG
     setGuestName('');
     guestNameRef.current = '';
 
-    const ws = new WebSocket(getSignalingUrl());
+    const ws = new WebSocket(getSignalingUrl(roomCode));
     wsRef.current = ws;
 
     const send = (msg: ClientMessage) => {

@@ -162,7 +162,7 @@ export const GuestJoinView: React.FC<GuestJoinViewProps> = ({ code }) => {
         }
       };
 
-      const ws = new WebSocket(getSignalingUrl());
+      const ws = new WebSocket(getSignalingUrl(code));
       wsRef.current = ws;
 
       ws.onopen = async () => {

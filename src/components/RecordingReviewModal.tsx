@@ -800,6 +800,7 @@ export const RecordingReviewModal: React.FC<RecordingReviewModalProps> = ({
                   filename.replace(/\.webm$/i, '').replace(/_/g, ' ')
                 }
                 defaultDescription={showNotes?.summary || ''}
+                showNotes={showNotes}
               />
               {exportStatus !== 'done' && (
                 <p className="text-[11px] text-slate-500">

@@ -32,10 +32,15 @@ export type ServerMessage =
   | { type: 'ice-candidate'; candidate: RTCIceCandidateInit | null; from: SignalingRole }
   | { type: 'error'; message: string };
 
-/** Same-origin WebSocket URL for signaling (works over http and https). */
-export function getSignalingUrl(): string {
+/** Same-origin WebSocket URL for signaling (works over http and https).
+ *  The room code rides in the query string so the Worker can route the
+ *  upgrade to the right Durable Object before any message arrives.
+ *  (Local dev server.ts ignores the query — the join message still carries
+ *  the code, so both paths work.) */
+export function getSignalingUrl(room?: string): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}/ws`;
+  const base = `${proto}//${window.location.host}/ws`;
+  return room ? `${base}?room=${encodeURIComponent(room)}` : base;
 }
 
 /** Public link a host sends to a guest: opens the app in guest-join mode. */
