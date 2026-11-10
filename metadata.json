@@ -1,0 +1,9 @@
+{
+  "name": "PodCraft Studio",
+  "description": "Professional web-based dual-camera podcast recording studio with real-time Web Audio voice cleanup, VU meters, customizable video filters, canvas compositing, and Gemini AI show notes generation.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
