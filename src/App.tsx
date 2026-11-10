@@ -25,6 +25,7 @@ import {
   VideoFilterSettings,
   AudioFilterSettings,
   ReactionMediaState,
+  ShowNotesData,
 } from './types/studio';
 import { useDevices } from './hooks/useDevices';
 import { useRemoteGuest } from './hooks/useRemoteGuest';
@@ -35,6 +36,7 @@ import { ChannelControls } from './components/ChannelControls';
 import { RecordingBar } from './components/RecordingBar';
 import { RecordingReviewModal } from './components/RecordingReviewModal';
 import { ShowNotesModal } from './components/ShowNotesModal';
+import { YouTubeCallback } from './components/YouTubeCallback';
 import { ReactionMediaControls } from './components/ReactionMediaControls';
 import { GuestJoinView } from './components/GuestJoinView';
 import { RemoteGuestInvite } from './components/RemoteGuestInvite';
@@ -79,6 +81,17 @@ export default function App() {
       return new URLSearchParams(window.location.search).get('guest');
     } catch {
       return null;
+    }
+  });
+
+  // YouTube OAuth return (Piece 3): Google redirects here with ?code=… after
+  // sign-in. The early return below renders the callback screen instead of
+  // the studio; it exchanges the code, then sends the user back.
+  const [isYouTubeCallback] = useState<boolean>(() => {
+    try {
+      return window.location.pathname === '/youtube-callback';
+    } catch {
+      return false;
     }
   });
 
@@ -223,6 +236,9 @@ export default function App() {
   const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [showNotesModal, setShowNotesModal] = useState(false);
+  /** Last generated AI show notes (Piece 3) — the Review modal pre-fills the
+   *  YouTube title + description from these when they exist. */
+  const [showNotes, setShowNotes] = useState<ShowNotesData | null>(null);
   const [hasRecordedSession, setHasRecordedSession] = useState(false);
   const [currentRecordingFilename, setCurrentRecordingFilename] = useState('Podcast_Recording.webm');
   const previousRecordedUrlRef = useRef<string | null>(null);
@@ -911,6 +927,11 @@ export default function App() {
     audioStudio.setMonitoring(next);
   };
 
+  // YouTube OAuth return: exchange the code, then back to the studio.
+  if (isYouTubeCallback) {
+    return <YouTubeCallback />;
+  }
+
   // Guest mode: ?guest=<code> opens the join screen instead of the studio.
   if (guestCode) {
     return <GuestJoinView code={guestCode} />;
@@ -1305,6 +1326,7 @@ export default function App() {
         onGenerateShowNotes={() => setShowNotesModal(true)}
         transcriptEntries={transcriptEntries}
         chapterMarkers={chapterMarkers}
+        showNotes={showNotes}
       />
 
       {/* Gemini AI Show Notes Modal */}
@@ -1317,6 +1339,7 @@ export default function App() {
         durationSeconds={recordingSeconds || lastRecordingDurationRef.current || 180}
         chapterMarkers={chapterMarkers}
         transcript={transcript}
+        onShowNotesGenerated={setShowNotes}
       />
     </div>
   );

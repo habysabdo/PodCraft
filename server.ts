@@ -226,6 +226,155 @@ async function startServer() {
     res.json({ code });
   });
 
+  // ---- YouTube publish (Piece 3) ----
+  // Google OAuth client credentials come from env vars ONLY — never hardcoded
+  // and never logged. The redirect URI is the app's origin + /youtube-callback,
+  // supplied by the client so the same code works locally
+  // (http://localhost:3000/youtube-callback) and hosted (the Render URL +
+  // /youtube-callback). BOTH URIs must be registered on the OAuth client in
+  // Google Cloud Console, or Google refuses the sign-in.
+  // The video file itself never touches this server: the browser uploads
+  // straight to YouTube with the stored access token.
+  const YOUTUBE_SCOPES = 'https://www.googleapis.com/auth/youtube.upload';
+  const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+
+  function youtubeEnvError(res: Response): boolean {
+    const missing: string[] = [];
+    if (!process.env.GOOGLE_CLIENT_ID) missing.push('GOOGLE_CLIENT_ID');
+    if (!process.env.GOOGLE_CLIENT_SECRET) missing.push('GOOGLE_CLIENT_SECRET');
+    if (missing.length > 0) {
+      res.status(500).json({
+        error: `YouTube is not set up yet — the server is missing ${missing.join(' and ')}. Add the Google OAuth client credentials to the server environment (Render dashboard → Environment) and restart the service.`,
+      });
+      return true;
+    }
+    return false;
+  }
+
+  function isValidRedirectUri(uri: unknown): uri is string {
+    if (typeof uri !== 'string') return false;
+    try {
+      const u = new URL(uri);
+      return (
+        (u.protocol === 'https:' || u.protocol === 'http:') &&
+        u.pathname === '/youtube-callback'
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  // Build the Google sign-in link for this browser's origin.
+  app.get('/api/youtube/auth-url', (req: Request, res: Response) => {
+    if (youtubeEnvError(res)) return;
+    const redirectUri = req.query.redirect_uri;
+    const state = typeof req.query.state === 'string' ? req.query.state : '';
+    if (!isValidRedirectUri(redirectUri)) {
+      return res.status(400).json({
+        error: 'Invalid redirect_uri — it must be the app origin + /youtube-callback.',
+      });
+    }
+    const params = new URLSearchParams({
+      client_id: process.env.GOOGLE_CLIENT_ID as string,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: YOUTUBE_SCOPES,
+      access_type: 'offline',
+      prompt: 'consent',
+      include_granted_scopes: 'true',
+    });
+    if (state) params.set('state', state);
+    res.json({
+      authUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
+    });
+  });
+
+  // Exchange the ?code= Google returned for tokens. Tokens go back to the
+  // browser only — they are never logged or stored on the server.
+  app.post('/api/youtube/exchange', async (req: Request, res: Response) => {
+    if (youtubeEnvError(res)) return;
+    const { code, redirect_uri } = req.body ?? {};
+    if (typeof code !== 'string' || !code || !isValidRedirectUri(redirect_uri)) {
+      return res.status(400).json({
+        error: 'Missing or invalid authorization code / redirect_uri.',
+      });
+    }
+    try {
+      const body = new URLSearchParams({
+        code,
+        client_id: process.env.GOOGLE_CLIENT_ID as string,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET as string,
+        redirect_uri,
+        grant_type: 'authorization_code',
+      });
+      const r = await fetch(GOOGLE_TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+        signal: AbortSignal.timeout(20000),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        return res.status(502).json({
+          error: `Google refused the code exchange: ${data?.error_description || data?.error || 'unknown error'}. Try connecting again.`,
+        });
+      }
+      return res.json({
+        access_token: data.access_token,
+        refresh_token: data.refresh_token ?? null,
+        expires_in: data.expires_in ?? 3600,
+        scope: data.scope ?? YOUTUBE_SCOPES,
+        token_type: data.token_type ?? 'Bearer',
+      });
+    } catch {
+      return res.status(502).json({
+        error: 'Could not reach Google to exchange the code — check the connection and try again.',
+      });
+    }
+  });
+
+  // Trade a refresh token for a fresh access token (called by the browser
+  // when its access token is expired, including mid-upload).
+  app.post('/api/youtube/refresh', async (req: Request, res: Response) => {
+    if (youtubeEnvError(res)) return;
+    const { refresh_token } = req.body ?? {};
+    if (typeof refresh_token !== 'string' || !refresh_token) {
+      return res.status(400).json({
+        error: 'Missing refresh token — reconnect YouTube.',
+      });
+    }
+    try {
+      const body = new URLSearchParams({
+        refresh_token,
+        client_id: process.env.GOOGLE_CLIENT_ID as string,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET as string,
+        grant_type: 'refresh_token',
+      });
+      const r = await fetch(GOOGLE_TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+        signal: AbortSignal.timeout(20000),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        return res.status(502).json({
+          error: `Google refused the token refresh: ${data?.error_description || data?.error || 'unknown error'}. Reconnect YouTube.`,
+        });
+      }
+      return res.json({
+        access_token: data.access_token,
+        expires_in: data.expires_in ?? 3600,
+        scope: data.scope ?? YOUTUBE_SCOPES,
+        token_type: data.token_type ?? 'Bearer',
+      });
+    } catch {
+      return res.status(502).json({
+        error: 'Could not reach Google to refresh the token — check the connection and try again.',
+      });
+    }
+  });
+
   // Post-recording Gemini AI Show Notes generation endpoint
   app.post('/api/generate-show-notes', async (req: Request, res: Response) => {
     try {

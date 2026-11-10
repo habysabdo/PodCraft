@@ -25,6 +25,9 @@ interface ShowNotesModalProps {
   durationSeconds: number;
   chapterMarkers: ChapterMarker[];
   transcript: string;
+  /** Called with the generated notes so the studio can reuse the title +
+   *  summary elsewhere (e.g. pre-fill the YouTube publish form). */
+  onShowNotesGenerated?: (notes: ShowNotesData | null) => void;
 }
 
 export const ShowNotesModal: React.FC<ShowNotesModalProps> = ({
@@ -36,6 +39,7 @@ export const ShowNotesModal: React.FC<ShowNotesModalProps> = ({
   durationSeconds,
   chapterMarkers,
   transcript,
+  onShowNotesGenerated,
 }) => {
   const [topic, setTopic] = useState('');
   const [editableTranscript, setEditableTranscript] = useState(transcript);
@@ -78,6 +82,7 @@ export const ShowNotesModal: React.FC<ShowNotesModalProps> = ({
       }
 
       setNotesData(result.data);
+      onShowNotesGenerated?.(result.data);
     } catch (err: any) {
       console.error('Show notes generation failed:', err);
       setError(err?.message || 'Failed to generate show notes with Gemini');

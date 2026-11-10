@@ -19,7 +19,7 @@ import {
   Plus,
   RotateCcw,
 } from 'lucide-react';
-import type { ChapterMarker } from '../types/studio';
+import type { ChapterMarker, ShowNotesData } from '../types/studio';
 import type { TranscriptEntry } from '../hooks/useSpeechRecognition';
 import {
   formatTime,
@@ -36,6 +36,7 @@ import {
 } from '../lib/editing';
 import { exportEditedVideo } from '../lib/videoExport';
 import { transcodeWebmToMp4 } from '../lib/ffmpegExport';
+import { YouTubePublish } from './YouTubePublish';
 
 interface RecordingReviewModalProps {
   isOpen: boolean;
@@ -47,6 +48,9 @@ interface RecordingReviewModalProps {
   onGenerateShowNotes: () => void;
   transcriptEntries: TranscriptEntry[];
   chapterMarkers: ChapterMarker[];
+  /** AI show notes for this recording, when generated — pre-fills the
+   *  YouTube title (episodeTitle) and description (summary). */
+  showNotes?: ShowNotesData | null;
 }
 
 /** Silence detection decodes the whole file into memory; guard long recordings. */
@@ -63,6 +67,7 @@ export const RecordingReviewModal: React.FC<RecordingReviewModalProps> = ({
   onGenerateShowNotes,
   transcriptEntries,
   chapterMarkers,
+  showNotes,
 }) => {
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -87,6 +92,9 @@ export const RecordingReviewModal: React.FC<RecordingReviewModalProps> = ({
   const [exportUrl, setExportUrl] = useState<string | null>(null);
   const [exportFilename, setExportFilename] = useState('');
   const [exportSizeMb, setExportSizeMb] = useState('');
+  /** The exported file itself (edited WebM or MP4) — the YouTube publish
+   *  section uploads this blob. Null until an export finishes. */
+  const [exportBlob, setExportBlob] = useState<Blob | null>(null);
 
   const duration = Math.max(0, durationSeconds);
 
@@ -107,6 +115,7 @@ export const RecordingReviewModal: React.FC<RecordingReviewModalProps> = ({
     setExportLabel('');
     setExportError(null);
     setExportUrl(null);
+    setExportBlob(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, videoUrl]);
 
@@ -266,6 +275,7 @@ export const RecordingReviewModal: React.FC<RecordingReviewModalProps> = ({
         if (format === 'webm') {
           const url = URL.createObjectURL(webm);
           setExportUrl(url);
+          setExportBlob(webm);
           setExportFilename(`${outName}.webm`);
           setExportSizeMb((webm.size / (1024 * 1024)).toFixed(2));
           setExportStatus('done');
@@ -276,6 +286,7 @@ export const RecordingReviewModal: React.FC<RecordingReviewModalProps> = ({
           });
           const url = URL.createObjectURL(mp4.blob);
           setExportUrl(url);
+          setExportBlob(mp4.blob);
           setExportFilename(mp4.filename);
           setExportSizeMb((mp4.blob.size / (1024 * 1024)).toFixed(2));
           setExportStatus('done');
@@ -776,6 +787,25 @@ export const RecordingReviewModal: React.FC<RecordingReviewModalProps> = ({
                     <Download className="w-3.5 h-3.5" /> Download
                   </a>
                 </div>
+              )}
+            </section>
+
+            {/* --- Publish to YouTube (Piece 3) --- */}
+            <section className="space-y-2 border-t border-slate-800 pt-4">
+              <YouTubePublish
+                file={exportBlob ?? videoBlob}
+                filename={exportFilename || filename}
+                defaultTitle={
+                  showNotes?.episodeTitle ||
+                  filename.replace(/\.webm$/i, '').replace(/_/g, ' ')
+                }
+                defaultDescription={showNotes?.summary || ''}
+              />
+              {exportStatus !== 'done' && (
+                <p className="text-[11px] text-slate-500">
+                  Tip: this publishes the original recording. Export your edit in step 5
+                  first if you want the trimmed, jump-cut version with captions.
+                </p>
               )}
             </section>
           </div>
