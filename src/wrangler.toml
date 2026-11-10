@@ -1,0 +1,8 @@
+name = "podcraft"
+main = "dist/index.js"
+compatibility_date = "2026-11-10"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "podcraft-db"
+database_id = "3bc995ca-2a0c-45c0-85a6-cebabd522f91"
