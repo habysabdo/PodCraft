@@ -3,7 +3,6 @@ import {
   Columns2,
   Tv,
   User,
-  Users,
   Settings2,
   FlipHorizontal,
   Play,
@@ -13,6 +12,8 @@ import {
   X,
   Radio,
   ExternalLink,
+  Video,
+  VideoOff,
 } from 'lucide-react';
 import { LayoutMode, StudioBranding, VideoFilterSettings, ReactionMediaState } from '../types/studio';
 import { drawStudioFrame, getCssFilterString } from '../utils/canvasCompositor';
@@ -20,64 +21,97 @@ import { drawStudioFrame, getCssFilterString } from '../utils/canvasCompositor';
 interface BroadcastCanvasViewProps {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   hostVideoRef: React.RefObject<HTMLVideoElement | null>;
-  guestVideoRef: React.RefObject<HTMLVideoElement | null>;
   mediaVideoRef?: React.RefObject<HTMLVideoElement | null>;
+  screenVideoRef?: React.RefObject<HTMLVideoElement | null>;
+  screenStream?: MediaStream | null;
   mediaTitle?: string;
   mediaState?: ReactionMediaState;
   isMediaActive?: boolean;
   layout: LayoutMode;
   setLayout: (layout: LayoutMode) => void;
   hostFilters: VideoFilterSettings;
-  guestFilters: VideoFilterSettings;
   hostName: string;
-  guestName: string;
   branding: StudioBranding;
   setBranding: React.Dispatch<React.SetStateAction<StudioBranding>>;
   isRecording: boolean;
   recordingTimeSeconds: number;
   hostVuLevel: number;
-  guestVuLevel: number;
   onToggleHostMirror?: () => void;
-  onToggleGuestMirror?: () => void;
   onTogglePlayPause?: () => void;
   onVolumeChange?: (vol: number) => void;
   onToggleMute?: () => void;
   onEjectMedia?: () => void;
   hostStream?: MediaStream | null;
+  isCameraOn?: boolean;
+  onToggleCamera?: () => void;
 }
 
 export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   canvasRef,
   hostVideoRef,
-  guestVideoRef,
   mediaVideoRef,
+  screenVideoRef,
+  screenStream,
   mediaTitle,
   mediaState,
   isMediaActive = false,
   layout,
   setLayout,
   hostFilters,
-  guestFilters,
   hostName,
-  guestName,
   branding,
   setBranding,
   isRecording,
   recordingTimeSeconds,
   hostVuLevel,
-  guestVuLevel,
   onToggleHostMirror,
-  onToggleGuestMirror,
   onTogglePlayPause,
   onVolumeChange,
   onToggleMute,
   onEjectMedia,
   hostStream,
+  isCameraOn = false,
+  onToggleCamera,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [showBrandingEditor, setShowBrandingEditor] = React.useState(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const pipVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Fade-through-black transition state when switching broadcast layouts
+  const [displayedLayout, setDisplayedLayout] = React.useState<LayoutMode>(layout);
+  const displayedLayoutRef = useRef<LayoutMode>(layout);
+  const [isFadingToBlack, setIsFadingToBlack] = React.useState(false);
+  const transitionRef = useRef({
+    active: false,
+    startTime: 0,
+    durationOut: 140,
+    durationHold: 30,
+    durationIn: 160,
+  });
+
+  useEffect(() => {
+    if (layout === displayedLayoutRef.current) return;
+
+    transitionRef.current = {
+      active: true,
+      startTime: performance.now(),
+      durationOut: 140,
+      durationHold: 30,
+      durationIn: 160,
+    };
+    setIsFadingToBlack(true);
+
+    const swapTimer = window.setTimeout(() => {
+      displayedLayoutRef.current = layout;
+      setDisplayedLayout(layout);
+      setIsFadingToBlack(false);
+    }, 155);
+
+    return () => {
+      window.clearTimeout(swapTimer);
+    };
+  }, [layout]);
 
   const isIframeEmbedded =
     Boolean(mediaState?.embedUrl) &&
@@ -85,16 +119,20 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
       mediaState?.type === 'facebook' ||
       mediaState?.type === 'web-embed');
 
-  // Sync Host video stream into PiP overlay video element
+  const showIframeStage = isIframeEmbedded && displayedLayout !== 'solo-host';
+
+  // Sync Host video stream into PiP overlay video element when iframe stage is visible
   useEffect(() => {
-    if (isIframeEmbedded && pipVideoRef.current) {
-      const stream = hostStream || (hostVideoRef.current?.srcObject as MediaStream | null);
-      if (stream) {
-        pipVideoRef.current.srcObject = stream;
-        pipVideoRef.current.play().catch(() => {});
-      }
+    if (!showIframeStage || !pipVideoRef.current) return;
+
+    if (hostStream) {
+      pipVideoRef.current.srcObject = hostStream;
+      pipVideoRef.current.play().catch(() => {});
+    } else {
+      pipVideoRef.current.pause();
+      pipVideoRef.current.srcObject = null;
     }
-  }, [isIframeEmbedded, hostStream, hostVideoRef.current?.srcObject]);
+  }, [showIframeStage, hostStream, displayedLayout]);
 
   // YouTube postMessage controller
   const sendYouTubeCommand = (func: string, args: unknown[] = []) => {
@@ -148,22 +186,47 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
 
     const renderLoop = () => {
       if (canvasRef.current) {
+        let fadeBlackAlpha = 0;
+        const tr = transitionRef.current;
+        if (tr.active) {
+          const elapsed = performance.now() - tr.startTime;
+          const total = tr.durationOut + tr.durationHold + tr.durationIn;
+          if (elapsed < tr.durationOut) {
+            fadeBlackAlpha = Math.min(1, elapsed / tr.durationOut);
+          } else if (elapsed < tr.durationOut + tr.durationHold) {
+            fadeBlackAlpha = 1;
+          } else if (elapsed < total) {
+            fadeBlackAlpha = Math.max(
+              0,
+              1 - (elapsed - tr.durationOut - tr.durationHold) / tr.durationIn
+            );
+          } else {
+            tr.active = false;
+            fadeBlackAlpha = 0;
+          }
+        }
+
+        const screenVideo = screenVideoRef?.current || null;
+        const activeMediaVideo =
+          screenStream && screenVideo && screenVideo.readyState >= 2
+            ? screenVideo
+            : screenStream
+            ? null
+            : mediaVideoRef?.current || null;
+
         drawStudioFrame({
           canvas: canvasRef.current,
           hostVideo: hostVideoRef.current,
-          guestVideo: guestVideoRef.current,
-          mediaVideo: mediaVideoRef?.current || null,
+          mediaVideo: activeMediaVideo,
           mediaTitle: mediaTitle || 'REACTION MEDIA',
-          layout,
+          layout: displayedLayoutRef.current,
           hostFilters,
-          guestFilters,
           hostName,
-          guestName,
           branding,
           isRecording,
           recordingTimeSeconds,
           hostActiveLevel: hostVuLevel,
-          guestActiveLevel: guestVuLevel,
+          fadeBlackAlpha: isIframeEmbedded ? 0 : fadeBlackAlpha,
         });
       }
       animId = requestAnimationFrame(renderLoop);
@@ -176,19 +239,17 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
   }, [
     canvasRef,
     hostVideoRef,
-    guestVideoRef,
     mediaVideoRef,
+    screenVideoRef,
+    screenStream,
     mediaTitle,
-    layout,
     hostFilters,
-    guestFilters,
     hostName,
-    guestName,
     branding,
     isRecording,
     recordingTimeSeconds,
     hostVuLevel,
-    guestVuLevel,
+    isIframeEmbedded,
   ]);
 
   return (
@@ -196,165 +257,124 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
       ref={containerRef}
       className="flex flex-col bg-slate-900/90 rounded-2xl border border-slate-800 shadow-2xl overflow-hidden relative"
     >
-      {/* Top Monitor Bar with Layout Switchers and Badges */}
-      <div className="flex items-center justify-between px-4 py-3 bg-slate-950 border-b border-slate-800/80">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)] animate-pulse" />
-            <span className="text-xs font-bold tracking-wider text-slate-200 uppercase font-mono">
-              PROGRAM OUT
-            </span>
-          </div>
-          <span className="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-            1080p FHD • 30 FPS
+      {/* Top Monitor Bar with Layout Switchers */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-slate-950 border-b border-slate-800/80">
+        <div className="flex items-center gap-3 text-xs text-slate-300">
+          <span className="font-bold tracking-wider text-slate-100 uppercase font-mono">
+            Program Out
           </span>
-          {isIframeEmbedded ? (
-            <span className="text-[10px] font-mono font-bold bg-purple-950 text-purple-300 border border-purple-700/80 px-2.5 py-0.5 rounded-full uppercase flex items-center gap-1.5 animate-pulse">
-              <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
-              {mediaState?.type === 'youtube'
-                ? 'YouTube Live Reaction'
-                : mediaState?.type === 'facebook'
-                ? 'Facebook Live Stream'
-                : 'Web Embed Commentary'}
-            </span>
-          ) : isMediaActive ? (
-            <span className="text-[10px] font-mono font-bold bg-purple-950 text-purple-300 border border-purple-800/70 px-2 py-0.5 rounded-full uppercase">
-              Reaction Mode Ready
-            </span>
-          ) : null}
+          <span className="text-slate-600">·</span>
+          <span className="font-mono text-slate-400 tabular-nums">
+            1080p FHD · 30 FPS
+          </span>
+          {isMediaActive && (
+            <>
+              <span className="text-slate-600">·</span>
+              <span className="font-mono font-semibold text-purple-300">
+                {isIframeEmbedded
+                  ? mediaState?.type === 'youtube'
+                    ? 'YouTube Reaction'
+                    : mediaState?.type === 'facebook'
+                    ? 'Facebook Reaction'
+                    : 'Web Embed Reaction'
+                  : 'Dual-View Reaction Ready'}
+              </span>
+            </>
+          )}
         </div>
 
-        {/* Layout Mode Switchers */}
-        <div className="flex flex-wrap items-center gap-1.5 bg-slate-900 p-1 rounded-xl border border-slate-800">
+        {/* Single-Host & Audience Dual-View Layout Switchers */}
+        <div className="flex flex-wrap items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800">
           <button
-            onClick={() => setLayout('side-by-side')}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-              layout === 'side-by-side'
-                ? 'bg-blue-600 text-white shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-            title="Side-by-Side (50/50 split screen)"
-          >
-            <Columns2 className="w-3.5 h-3.5" />
-            Split
-          </button>
-
-          <button
-            onClick={() => setLayout('pip')}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-              layout === 'pip'
-                ? 'bg-blue-600 text-white shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-            title="Picture-in-Picture (PiP)"
-          >
-            <Tv className="w-3.5 h-3.5" />
-            PiP
-          </button>
-
-          <button
+            type="button"
             onClick={() => setLayout('solo-host')}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
               layout === 'solo-host'
                 ? 'bg-blue-600 text-white shadow-md'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800'
             }`}
-            title="Solo Host focus"
+            title="Single-Host Camera (Full Screen)"
           >
             <User className="w-3.5 h-3.5" />
             Host Solo
           </button>
 
-          {/* Reaction Split & Reaction PiP layout buttons */}
           <button
+            type="button"
             onClick={() => setLayout('reaction-split')}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
               layout === 'reaction-split'
                 ? 'bg-purple-600 text-white shadow-md'
                 : 'text-purple-300 hover:text-white hover:bg-purple-950/60'
             }`}
-            title="Reaction Split: Media (70%) on left, Host webcam (30%) on right"
+            title="Reaction Split: Added video (70%) on left, your webcam (30%) on right"
           >
-            <Columns2 className="w-3.5 h-3.5 text-purple-400" />
-            Reaction 70/30
+            <Columns2 className="w-3.5 h-3.5 text-purple-300" />
+            Reaction Split (70/30)
           </button>
 
           <button
+            type="button"
             onClick={() => setLayout('reaction-pip')}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
               layout === 'reaction-pip'
                 ? 'bg-purple-600 text-white shadow-md'
                 : 'text-purple-300 hover:text-white hover:bg-purple-950/60'
             }`}
-            title="Reaction PiP: Media full screen with Host webcam pinned in corner"
+            title="Reaction PiP: Added video full screen with your webcam framed in bottom-right corner"
           >
-            <Tv className="w-3.5 h-3.5 text-purple-400" />
+            <Tv className="w-3.5 h-3.5 text-purple-300" />
             Reaction PiP
-          </button>
-
-          <button
-            onClick={() => setLayout('solo-guest')}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-              layout === 'solo-guest'
-                ? 'bg-blue-600 text-white shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-            title="Solo Guest focus"
-          >
-            <Users className="w-3.5 h-3.5" />
-            Guest
           </button>
         </div>
 
-        {/* Lower Thirds & Camera Orientation Toggles */}
+        {/* Camera Toggle, Lower Thirds & Orientation */}
         <div className="flex flex-wrap items-center gap-2">
+          {onToggleCamera && (
+            <button
+              type="button"
+              onClick={onToggleCamera}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                isCameraOn
+                  ? 'bg-emerald-600/20 text-emerald-300 border-emerald-500/50 hover:bg-emerald-600/30'
+                  : 'bg-red-950/60 text-red-300 border-red-700/60 hover:bg-red-900/60'
+              }`}
+              title={isCameraOn ? 'Turn Camera Off & Release Hardware' : 'Turn Camera On'}
+            >
+              {isCameraOn ? (
+                <>
+                  <Video className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Camera On</span>
+                </>
+              ) : (
+                <>
+                  <VideoOff className="w-3.5 h-3.5 text-red-400" />
+                  <span>Camera Off</span>
+                </>
+              )}
+            </button>
+          )}
+
           {onToggleHostMirror && (
             <button
+              type="button"
               onClick={onToggleHostMirror}
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition-all cursor-pointer ${
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
                 hostFilters.mirror
                   ? 'bg-blue-600 text-white border-blue-400 shadow-md shadow-blue-600/30'
                   : 'bg-slate-900 text-slate-300 border-slate-800 hover:text-white hover:bg-slate-800'
               }`}
-              title="Flip Host camera horizontally (matches real-life mirror orientation)"
+              title="Toggle horizontal camera flip (Default is natural un-mirrored orientation)"
             >
               <FlipHorizontal className="w-3.5 h-3.5" />
-              <span>Flip Host</span>
-              <span
-                className={`text-[10px] font-mono px-1 py-0.2 rounded font-bold ${
-                  hostFilters.mirror ? 'bg-blue-900/80 text-blue-200' : 'bg-slate-800 text-slate-400'
-                }`}
-              >
-                {hostFilters.mirror ? 'ON' : 'OFF'}
-              </span>
-            </button>
-          )}
-
-          {onToggleGuestMirror && (
-            <button
-              onClick={onToggleGuestMirror}
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition-all cursor-pointer ${
-                guestFilters.mirror
-                  ? 'bg-purple-600 text-white border-purple-400 shadow-md shadow-purple-600/30'
-                  : 'bg-slate-900 text-slate-300 border-slate-800 hover:text-white hover:bg-slate-800'
-              }`}
-              title="Flip Guest camera horizontally (matches real-life mirror orientation)"
-            >
-              <FlipHorizontal className="w-3.5 h-3.5" />
-              <span>Flip Guest</span>
-              <span
-                className={`text-[10px] font-mono px-1 py-0.2 rounded font-bold ${
-                  guestFilters.mirror ? 'bg-purple-900/80 text-purple-200' : 'bg-slate-800 text-slate-400'
-                }`}
-              >
-                {guestFilters.mirror ? 'ON' : 'OFF'}
-              </span>
+              <span>{hostFilters.mirror ? 'Mirrored' : 'Natural Cam'}</span>
             </button>
           )}
 
           <button
+            type="button"
             onClick={() => setShowBrandingEditor(!showBrandingEditor)}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition-colors cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
               showBrandingEditor
                 ? 'bg-slate-800 text-white border-blue-500/50'
                 : 'bg-slate-900 text-slate-300 border-slate-800 hover:bg-slate-800'
@@ -371,7 +391,7 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
         <div className="p-3 bg-slate-950/95 border-b border-slate-800 grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
           <div>
             <label className="text-[11px] font-semibold text-slate-400 block mb-1">
-              Podcast Show Name
+              Show Name
             </label>
             <input
               type="text"
@@ -415,22 +435,20 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
           width={1920}
           height={1080}
           className={`w-full h-full object-contain ${
-            isIframeEmbedded ? 'opacity-0 pointer-events-none absolute inset-0' : 'block shadow-inner cursor-default'
+            showIframeStage ? 'opacity-0 pointer-events-none absolute inset-0' : 'block shadow-inner cursor-default'
           }`}
         />
 
         {/* Embedded URL Mode: Responsive Iframe with Picture-in-Picture Host Webcam & Floating Controls */}
-        {isIframeEmbedded && (
+        {showIframeStage && (
           <div className="absolute inset-0 w-full h-full bg-[#080a10] flex flex-col z-10 select-none">
             {/* Top Bar on Viewport */}
             <div className="absolute top-3 left-4 right-4 z-30 flex items-center justify-between pointer-events-none">
-              {/* Show Header & Media Title */}
               <div className="flex items-center gap-2 bg-slate-950/85 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-slate-800/80 shadow-lg pointer-events-auto">
-                <span className="w-2.5 h-2.5 rounded-full bg-purple-500 animate-pulse" />
                 <span className="text-xs font-bold text-white tracking-wide truncate max-w-xs md:max-w-md">
                   {mediaState?.title || 'External Video Stream'}
                 </span>
-                <span className="text-[10px] font-mono text-purple-300 bg-purple-950/80 border border-purple-800/60 px-2 py-0.5 rounded-full">
+                <span className="text-[10px] font-mono text-purple-300">
                   {mediaState?.type === 'youtube'
                     ? 'YouTube'
                     : mediaState?.type === 'facebook'
@@ -439,7 +457,6 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 </span>
               </div>
 
-              {/* Recording indicator & Live Audio status */}
               <div className="flex items-center gap-2 pointer-events-auto">
                 {isRecording ? (
                   <div className="flex items-center gap-2 bg-red-950/90 border border-red-700/80 text-red-200 px-3 py-1.5 rounded-full text-xs font-mono font-bold shadow-lg shadow-red-950/40">
@@ -456,10 +473,8 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
             </div>
 
             {/* Main Content Area: Split 70/30 or Fullscreen with Corner PiP */}
-            {layout === 'reaction-split' ? (
-              /* Reaction Split Mode (70% Media Video on Left, 30% Host Webcam on Right) */
+            {displayedLayout === 'reaction-split' ? (
               <div className="w-full h-full flex p-3 pt-14 gap-3 bg-gradient-to-b from-slate-950/40 to-slate-950/90">
-                {/* 70% Left: Embedded Video Iframe */}
                 <div className="w-[70%] h-full rounded-xl overflow-hidden border border-slate-800 bg-black relative shadow-2xl">
                   <iframe
                     ref={iframeRef}
@@ -471,7 +486,6 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                   />
                 </div>
 
-                {/* 30% Right: Host Webcam Rack */}
                 <div
                   className={`w-[30%] h-full rounded-xl overflow-hidden border-2 flex flex-col relative transition-all duration-300 ${
                     hostVuLevel > 0.08
@@ -488,29 +502,34 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                       filter: getCssFilterString(hostFilters),
                       transform: hostFilters.mirror ? 'scaleX(-1)' : 'scaleX(1)',
                     }}
-                    className="w-full h-full object-cover"
+                    className={`w-full h-full object-cover ${isCameraOn ? 'opacity-100' : 'opacity-0'}`}
                   />
+                  {!isCameraOn && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 text-slate-400 gap-2">
+                      <VideoOff className="w-8 h-8 text-slate-600" />
+                      <span className="text-xs font-mono font-semibold uppercase tracking-wider">
+                        Camera Off
+                      </span>
+                    </div>
+                  )}
 
-                  {/* Host Nameplate */}
                   <div className="absolute bottom-3 left-3 right-3 bg-slate-950/90 backdrop-blur border border-slate-800 px-3 py-2 rounded-lg flex items-center justify-between shadow-xl">
                     <div className="flex items-center gap-2 truncate">
                       <span
                         className={`w-2 h-2 rounded-full shrink-0 ${
-                          hostVuLevel > 0.08 ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'
+                          hostVuLevel > 0.08 ? 'bg-emerald-400' : 'bg-slate-600'
                         }`}
                       />
                       <span className="text-white text-xs font-bold truncate">{hostName}</span>
                     </div>
-                    <span className="text-[10px] font-mono font-bold text-purple-400 bg-purple-950/80 px-2 py-0.5 rounded border border-purple-800/60 uppercase">
+                    <span className="text-[10px] font-mono font-bold text-purple-400 uppercase">
                       HOST
                     </span>
                   </div>
                 </div>
               </div>
             ) : (
-              /* Reaction PiP Mode (Full-Bleed Media with Host Webcam pinned in bottom-right corner) */
               <div className="w-full h-full relative">
-                {/* Fullscreen Video Iframe */}
                 <iframe
                   ref={iframeRef}
                   src={mediaState?.embedUrl}
@@ -520,7 +539,6 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                   allowFullScreen
                 />
 
-                {/* Floating Corner Picture-in-Picture Webcam */}
                 <div
                   className={`absolute bottom-5 right-5 w-64 md:w-80 aspect-video rounded-2xl overflow-hidden border-2 shadow-2xl transition-all duration-300 z-20 group ${
                     hostVuLevel > 0.08
@@ -537,23 +555,29 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                       filter: getCssFilterString(hostFilters),
                       transform: hostFilters.mirror ? 'scaleX(-1)' : 'scaleX(1)',
                     }}
-                    className="w-full h-full object-cover"
+                    className={`w-full h-full object-cover ${isCameraOn ? 'opacity-100' : 'opacity-0'}`}
                   />
+                  {!isCameraOn && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 text-slate-400 gap-1.5">
+                      <VideoOff className="w-6 h-6 text-slate-600" />
+                      <span className="text-[11px] font-mono font-semibold uppercase tracking-wider">
+                        Camera Off
+                      </span>
+                    </div>
+                  )}
 
-                  {/* Gradient vignette */}
                   <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-transparent pointer-events-none" />
 
-                  {/* Name Badge */}
                   <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between bg-slate-950/85 backdrop-blur-md px-2.5 py-1.5 rounded-lg border border-slate-800/80">
                     <div className="flex items-center gap-1.5 truncate">
                       <span
                         className={`w-2 h-2 rounded-full shrink-0 ${
-                          hostVuLevel > 0.08 ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'
+                          hostVuLevel > 0.08 ? 'bg-emerald-400' : 'bg-slate-500'
                         }`}
                       />
                       <span className="text-white text-xs font-bold truncate">{hostName}</span>
                     </div>
-                    <span className="text-[9px] font-mono font-bold text-purple-300 bg-purple-950/90 px-1.5 py-0.5 rounded border border-purple-800/60 uppercase">
+                    <span className="text-[9px] font-mono font-bold text-purple-300 uppercase">
                       HOST
                     </span>
                   </div>
@@ -575,8 +599,8 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
 
             {/* Floating Glassmorphic Playback Controls Bar */}
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 bg-slate-950/90 backdrop-blur-md border border-slate-800 px-4 py-2 rounded-2xl shadow-2xl">
-              {/* Play / Pause button */}
               <button
+                type="button"
                 onClick={handlePlayPauseClick}
                 className="w-9 h-9 rounded-xl bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center transition-all cursor-pointer shadow-md shadow-purple-600/30"
                 title={mediaState?.isPlaying ? 'Pause Embedded Video' : 'Play Embedded Video'}
@@ -588,9 +612,9 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 )}
               </button>
 
-              {/* Volume Slider & Mute Toggle */}
               <div className="flex items-center gap-2 pl-2 border-l border-slate-800">
                 <button
+                  type="button"
                   onClick={handleMuteToggleClick}
                   className="text-slate-400 hover:text-white transition-colors cursor-pointer"
                   title={mediaState?.muted ? 'Unmute' : 'Mute'}
@@ -613,11 +637,11 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 />
               </div>
 
-              {/* Layout Mode Toggle between PiP and 70/30 Split */}
               <div className="flex items-center gap-1 pl-2 border-l border-slate-800">
                 <button
+                  type="button"
                   onClick={() => setLayout(layout === 'reaction-pip' ? 'reaction-split' : 'reaction-pip')}
-                  className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
+                  className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
                   title="Toggle between Reaction PiP and 70/30 Split"
                 >
                   {layout === 'reaction-pip' ? (
@@ -634,7 +658,6 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 </button>
               </div>
 
-              {/* External Link */}
               {mediaState?.rawUrl && (
                 <a
                   href={mediaState.rawUrl}
@@ -647,9 +670,9 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
                 </a>
               )}
 
-              {/* Close / Eject Video button */}
               {onEjectMedia && (
                 <button
+                  type="button"
                   onClick={onEjectMedia}
                   className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-950/40 rounded-xl transition-all cursor-pointer ml-1"
                   title="Close and Eject External Video"
@@ -661,14 +684,14 @@ export const BroadcastCanvasView: React.FC<BroadcastCanvasViewProps> = ({
           </div>
         )}
 
-        {/* Floating Quick Action Overlays for normal layouts */}
-        {!isIframeEmbedded && layout === 'side-by-side' && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 pointer-events-none">
-            <span className="bg-slate-950/80 backdrop-blur border border-slate-800 text-slate-300 px-3 py-1 rounded-full text-[11px] font-mono tracking-wider flex items-center gap-1.5 shadow-lg">
-              <Columns2 className="w-3 h-3 text-blue-400" />
-              DUAL BROADCAST 50/50
-            </span>
-          </div>
+        {/* Subtle fade-through-black scrim for iframe stage transitions */}
+        {isIframeEmbedded && (
+          <div
+            aria-hidden="true"
+            className={`absolute inset-0 bg-black pointer-events-none z-40 transition-opacity duration-150 ease-in-out ${
+              isFadingToBlack ? 'opacity-100' : 'opacity-0'
+            }`}
+          />
         )}
       </div>
     </div>

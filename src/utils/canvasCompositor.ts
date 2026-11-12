@@ -9,7 +9,13 @@ export function getCssFilterString(filters: VideoFilterSettings): string {
 
   if (filters.brightness !== 100) {
     parts.push(`brightness(${filters.brightness}%)`);
-  } else if (!filters.backgroundBlur && !filters.grayscale && filters.warmth === 0 && filters.contrast === 100 && filters.saturation === 100) {
+  } else if (
+    !filters.backgroundBlur &&
+    !filters.grayscale &&
+    filters.warmth === 0 &&
+    filters.contrast === 100 &&
+    filters.saturation === 100
+  ) {
     parts.push('brightness(100%)');
   }
 
@@ -26,7 +32,6 @@ export function getCssFilterString(filters: VideoFilterSettings): string {
   }
 
   if (filters.warmth > 0) {
-    // Warmth is simulated via slight sepia + hue-rotate warmth
     const sepiaVal = Math.min(60, filters.warmth * 0.5);
     parts.push(`sepia(${sepiaVal}%)`);
   }
@@ -37,38 +42,32 @@ export function getCssFilterString(filters: VideoFilterSettings): string {
 export interface DrawFrameOptions {
   canvas: HTMLCanvasElement;
   hostVideo: HTMLVideoElement | null;
-  guestVideo: HTMLVideoElement | null;
   mediaVideo?: HTMLVideoElement | null;
   mediaTitle?: string;
   layout: LayoutMode;
   hostFilters: VideoFilterSettings;
-  guestFilters: VideoFilterSettings;
   hostName: string;
-  guestName: string;
   branding: StudioBranding;
   isRecording: boolean;
   recordingTimeSeconds: number;
   hostActiveLevel: number;
-  guestActiveLevel: number;
+  fadeBlackAlpha?: number;
 }
 
 export function drawStudioFrame(options: DrawFrameOptions): void {
   const {
     canvas,
     hostVideo,
-    guestVideo,
     mediaVideo,
     mediaTitle = 'REACTION MEDIA',
     layout,
     hostFilters,
-    guestFilters,
     hostName,
-    guestName,
     branding,
     isRecording,
     recordingTimeSeconds,
     hostActiveLevel,
-    guestActiveLevel,
+    fadeBlackAlpha = 0,
   } = options;
 
   const ctx = canvas.getContext('2d');
@@ -113,74 +112,9 @@ export function drawStudioFrame(options: DrawFrameOptions): void {
     ctx.stroke();
   }
 
-  // Draw layouts
-  if (layout === 'side-by-side') {
-    // Two 16:9 slots side by side with modern framing
-    const margin = 48;
-    const gap = 36;
-    const availableW = width - margin * 2 - gap;
-    const slotW = availableW / 2;
-    const slotH = (slotW * 9) / 16;
-    const slotY = (height - slotH) / 2 - 20;
-
-    // Host Box (Left)
-    drawVideoSlot(
-      ctx,
-      hostVideo,
-      margin,
-      slotY,
-      slotW,
-      slotH,
-      hostFilters,
-      hostName,
-      'HOST',
-      hostActiveLevel > 0.15
-    );
-
-    // Guest Box (Right)
-    drawVideoSlot(
-      ctx,
-      guestVideo,
-      margin + slotW + gap,
-      slotY,
-      slotW,
-      slotH,
-      guestFilters,
-      guestName,
-      'GUEST',
-      guestActiveLevel > 0.15
-    );
-  } else if (layout === 'pip') {
-    // Main video (Host) full screen
-    drawFullBleedVideo(ctx, hostVideo, width, height, hostFilters);
-
-    // Picture-in-picture Inset (Guest) in bottom-right
-    const pipW = 480;
-    const pipH = (pipW * 9) / 16;
-    const pipX = width - pipW - 48;
-    const pipY = height - pipH - 64;
-
-    // PiP drop shadow
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.7)';
-    ctx.shadowBlur = 24;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = 8;
-    drawVideoSlot(
-      ctx,
-      guestVideo,
-      pipX,
-      pipY,
-      pipW,
-      pipH,
-      guestFilters,
-      guestName,
-      'GUEST',
-      guestActiveLevel > 0.15
-    );
-    ctx.restore();
-  } else if (layout === 'reaction-split') {
-    // Media (70%) on left, Host (30%) on right
+  // Draw Single-Host or Audience Dual-View Layouts
+  if (layout === 'reaction-split') {
+    // Added video on the left (70% width), Host webcam on the right (30% width)
     const margin = 48;
     const gap = 32;
     const availableW = width - margin * 2 - gap;
@@ -189,7 +123,7 @@ export function drawStudioFrame(options: DrawFrameOptions): void {
     const mediaH = (mediaW * 9) / 16;
     const slotY = (height - mediaH) / 2 - 15;
 
-    // Media Video slot (Left)
+    // Added Media Slot (Left 70%)
     drawVideoSlot(
       ctx,
       mediaVideo || null,
@@ -200,10 +134,11 @@ export function drawStudioFrame(options: DrawFrameOptions): void {
       { brightness: 100, contrast: 100, saturation: 100, warmth: 0, grayscale: false },
       mediaTitle,
       'MEDIA',
-      false
+      false,
+      'contain'
     );
 
-    // Host Webcam slot (Right) - tall portrait reaction box
+    // Host Webcam Slot (Right 30%)
     drawVideoSlot(
       ctx,
       hostVideo,
@@ -214,12 +149,19 @@ export function drawStudioFrame(options: DrawFrameOptions): void {
       hostFilters,
       hostName,
       'HOST',
-      hostActiveLevel > 0.15
+      hostActiveLevel > 0.15,
+      'cover'
     );
   } else if (layout === 'reaction-pip') {
-    // Media Video fills background full screen
-    const defaultMediaFilters = { brightness: 100, contrast: 100, saturation: 100, warmth: 0, grayscale: false };
-    drawFullBleedVideo(ctx, mediaVideo || null, width, height, defaultMediaFilters);
+    // Added video fills the background (100%), Host webcam framed in bottom-right corner
+    const defaultMediaFilters: VideoFilterSettings = {
+      brightness: 100,
+      contrast: 100,
+      saturation: 100,
+      warmth: 0,
+      grayscale: false,
+    };
+    drawFullBleedVideo(ctx, mediaVideo || null, width, height, defaultMediaFilters, 'contain');
 
     // Host Webcam pinned in bottom-right corner
     const pipW = 460;
@@ -242,17 +184,14 @@ export function drawStudioFrame(options: DrawFrameOptions): void {
       hostFilters,
       hostName,
       'HOST',
-      hostActiveLevel > 0.15
+      hostActiveLevel > 0.15,
+      'cover'
     );
     ctx.restore();
-  } else if (layout === 'solo-host') {
-    drawFullBleedVideo(ctx, hostVideo, width, height, hostFilters);
-    // Draw subtle host lower badge
+  } else {
+    // Default: solo-host (single active webcam feed, natural orientation)
+    drawFullBleedVideo(ctx, hostVideo, width, height, hostFilters, 'cover');
     drawSoloNameplate(ctx, hostName, 'HOST', 48, height - 120, hostActiveLevel > 0.15);
-  } else if (layout === 'solo-guest') {
-    drawFullBleedVideo(ctx, guestVideo, width, height, guestFilters);
-    // Draw subtle guest lower badge
-    drawSoloNameplate(ctx, guestName, 'GUEST', 48, height - 120, guestActiveLevel > 0.15);
   }
 
   // Draw Lower Third overlay if enabled
@@ -265,6 +204,14 @@ export function drawStudioFrame(options: DrawFrameOptions): void {
 
   // Draw Top Studio Header watermark (top left)
   drawStudioHeader(ctx, branding.podcastName);
+
+  // Subtle fade-through-black broadcast transition overlay
+  if (fadeBlackAlpha > 0) {
+    ctx.save();
+    ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(1, Math.max(0, fadeBlackAlpha))})`;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+  }
 
   ctx.restore();
 }
@@ -279,7 +226,8 @@ function drawVideoSlot(
   filters: VideoFilterSettings,
   name: string,
   role: string,
-  isSpeaking: boolean
+  isSpeaking: boolean,
+  fitMode: 'cover' | 'contain' = 'cover'
 ): void {
   const radius = 16;
 
@@ -290,57 +238,94 @@ function drawVideoSlot(
   ctx.clip();
 
   // Background for slot
-  ctx.fillStyle = '#111420';
+  ctx.fillStyle = '#090b12';
   ctx.fillRect(x, y, w, h);
 
-  if (video && video.videoWidth > 0 && video.readyState >= 1) {
-    if (filters.backgroundBlur && !filters.grayscale && filters.warmth === 0 && filters.brightness === 100 && filters.contrast === 100 && filters.saturation === 100) {
+  const hasActiveSource = Boolean(
+    video && (video.srcObject !== null || Boolean(video.currentSrc || video.src))
+  );
+  if (video && hasActiveSource && video.videoWidth > 0 && video.readyState >= 2) {
+    if (
+      filters.backgroundBlur &&
+      !filters.grayscale &&
+      filters.warmth === 0 &&
+      filters.brightness === 100 &&
+      filters.contrast === 100 &&
+      filters.saturation === 100
+    ) {
       ctx.filter = 'blur(10px)';
     } else {
       ctx.filter = getCssFilterString(filters);
     }
 
-    // Compute center-crop (cover fit)
     const vw = video.videoWidth || 1280;
     const vh = video.videoHeight || 720;
     const slotAspect = w / h;
     const videoAspect = vw / vh;
 
-    let sx = 0,
-      sy = 0,
-      sWidth = vw,
-      sHeight = vh;
-    if (videoAspect > slotAspect) {
-      sWidth = vh * slotAspect;
-      sx = (vw - sWidth) / 2;
+    if (fitMode === 'contain') {
+      let dw = w;
+      let dh = h;
+      let dx = x;
+      let dy = y;
+      if (videoAspect > slotAspect) {
+        dh = w / videoAspect;
+        dy = y + (h - dh) / 2;
+      } else {
+        dw = h * videoAspect;
+        dx = x + (w - dw) / 2;
+      }
+      if (filters.mirror) {
+        ctx.save();
+        ctx.translate(dx + dw, dy);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, vw, vh, 0, 0, dw, dh);
+        ctx.restore();
+      } else {
+        ctx.drawImage(video, 0, 0, vw, vh, dx, dy, dw, dh);
+      }
     } else {
-      sHeight = vw / slotAspect;
-      sy = (vh - sHeight) / 2;
-    }
+      // Cover fit (center-crop)
+      let sx = 0;
+      let sy = 0;
+      let sWidth = vw;
+      let sHeight = vh;
+      if (videoAspect > slotAspect) {
+        sWidth = vh * slotAspect;
+        sx = (vw - sWidth) / 2;
+      } else {
+        sHeight = vw / slotAspect;
+        sy = (vh - sHeight) / 2;
+      }
 
-    if (filters.mirror) {
-      ctx.save();
-      ctx.translate(x + w, y);
-      ctx.scale(-1, 1);
-      ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, w, h);
-      ctx.restore();
-    } else {
-      ctx.drawImage(video, sx, sy, sWidth, sHeight, x, y, w, h);
+      if (filters.mirror) {
+        ctx.save();
+        ctx.translate(x + w, y);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, w, h);
+        ctx.restore();
+      } else {
+        ctx.drawImage(video, sx, sy, sWidth, sHeight, x, y, w, h);
+      }
     }
     ctx.filter = 'none';
   } else {
-    // Placeholder feed graphic
+    // Empty feed notice
     ctx.filter = 'none';
-    ctx.fillStyle = '#181b29';
+    ctx.fillStyle = '#141724';
     ctx.fillRect(x, y, w, h);
 
-    ctx.fillStyle = '#4b5563';
-    ctx.font = '600 24px "Plus Jakarta Sans", sans-serif';
+    ctx.fillStyle = '#64748b';
+    ctx.font = '600 22px "Plus Jakarta Sans", sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`${name} (${role})`, x + w / 2, y + h / 2 - 12);
-    ctx.font = '400 16px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#6b7280';
-    ctx.fillText('NO VIDEO FEED CONNECTED', x + w / 2, y + h / 2 + 20);
+    ctx.fillText(name, x + w / 2, y + h / 2 - 12);
+    ctx.font = '400 15px "JetBrains Mono", monospace';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(
+      role === 'MEDIA' ? 'SHARE SCREEN OR LOAD VIDEO' : 'CAMERA OFF',
+      x + w / 2,
+      y + h / 2 + 20
+    );
   }
 
   // Subtle inner gradient vignette
@@ -360,7 +345,7 @@ function drawVideoSlot(
     ctx.shadowColor = 'rgba(59, 130, 246, 0.6)';
     ctx.shadowBlur = 18;
   } else {
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
     ctx.lineWidth = 2;
   }
   ctx.beginPath();
@@ -375,12 +360,11 @@ function drawVideoSlot(
   const badgeH = 28;
 
   ctx.font = '700 14px "Plus Jakarta Sans", sans-serif';
-  const nameWidth = ctx.measureText(name).width;
+  const nameWidth = Math.min(260, ctx.measureText(name).width);
   ctx.font = '600 11px "JetBrains Mono", monospace';
   const roleWidth = ctx.measureText(role).width;
   const badgeW = nameWidth + roleWidth + 36;
 
-  // Badge pill
   ctx.fillStyle = 'rgba(12, 14, 22, 0.85)';
   ctx.beginPath();
   ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 6);
@@ -390,19 +374,16 @@ function drawVideoSlot(
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Speaking indicator dot
   ctx.fillStyle = isSpeaking ? '#22c55e' : '#6b7280';
   ctx.beginPath();
   ctx.arc(badgeX + 12, badgeY + badgeH / 2, 4, 0, Math.PI * 2);
   ctx.fill();
 
-  // Name
   ctx.fillStyle = '#ffffff';
   ctx.font = '700 13px "Plus Jakarta Sans", sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(name, badgeX + 22, badgeY + 18);
+  ctx.fillText(name, badgeX + 22, badgeY + 18, 255);
 
-  // Role pill
   ctx.fillStyle = '#38bdf8';
   ctx.font = '700 10px "JetBrains Mono", monospace';
   ctx.fillText(role, badgeX + 22 + nameWidth + 8, badgeY + 18);
@@ -415,11 +396,22 @@ function drawFullBleedVideo(
   video: HTMLVideoElement | null,
   width: number,
   height: number,
-  filters: VideoFilterSettings
+  filters: VideoFilterSettings,
+  fitMode: 'cover' | 'contain' = 'cover'
 ): void {
-  if (video && video.videoWidth > 0 && video.readyState >= 1) {
+  const hasActiveSource = Boolean(
+    video && (video.srcObject !== null || Boolean(video.currentSrc || video.src))
+  );
+  if (video && hasActiveSource && video.videoWidth > 0 && video.readyState >= 2) {
     ctx.save();
-    if (filters.backgroundBlur && !filters.grayscale && filters.warmth === 0 && filters.brightness === 100 && filters.contrast === 100 && filters.saturation === 100) {
+    if (
+      filters.backgroundBlur &&
+      !filters.grayscale &&
+      filters.warmth === 0 &&
+      filters.brightness === 100 &&
+      filters.contrast === 100 &&
+      filters.saturation === 100
+    ) {
       ctx.filter = 'blur(10px)';
     } else {
       ctx.filter = getCssFilterString(filters);
@@ -430,36 +422,66 @@ function drawFullBleedVideo(
     const slotAspect = width / height;
     const videoAspect = vw / vh;
 
-    let sx = 0,
-      sy = 0,
-      sWidth = vw,
-      sHeight = vh;
-    if (videoAspect > slotAspect) {
-      sWidth = vh * slotAspect;
-      sx = (vw - sWidth) / 2;
-    } else {
-      sHeight = vw / slotAspect;
-      sy = (vh - sHeight) / 2;
-    }
+    if (fitMode === 'contain') {
+      ctx.fillStyle = '#05060a';
+      ctx.fillRect(0, 0, width, height);
 
-    if (filters.mirror) {
-      ctx.save();
-      ctx.translate(width, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, width, height);
-      ctx.restore();
+      let dw = width;
+      let dh = height;
+      let dx = 0;
+      let dy = 0;
+      if (videoAspect > slotAspect) {
+        dh = width / videoAspect;
+        dy = (height - dh) / 2;
+      } else {
+        dw = height * videoAspect;
+        dx = (width - dw) / 2;
+      }
+
+      if (filters.mirror) {
+        ctx.save();
+        ctx.translate(dx + dw, dy);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, vw, vh, 0, 0, dw, dh);
+        ctx.restore();
+      } else {
+        ctx.drawImage(video, 0, 0, vw, vh, dx, dy, dw, dh);
+      }
     } else {
-      ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, width, height);
+      let sx = 0;
+      let sy = 0;
+      let sWidth = vw;
+      let sHeight = vh;
+      if (videoAspect > slotAspect) {
+        sWidth = vh * slotAspect;
+        sx = (vw - sWidth) / 2;
+      } else {
+        sHeight = vw / slotAspect;
+        sy = (vh - sHeight) / 2;
+      }
+
+      if (filters.mirror) {
+        ctx.save();
+        ctx.translate(width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, width, height);
+        ctx.restore();
+      } else {
+        ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, width, height);
+      }
     }
     ctx.restore();
   } else {
     ctx.fillStyle = '#0f121d';
     ctx.fillRect(0, 0, width, height);
 
-    ctx.fillStyle = '#6b7280';
+    ctx.fillStyle = '#64748b';
     ctx.font = '600 28px "Plus Jakarta Sans", sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('NO LIVE FEED AVAILABLE', width / 2, height / 2);
+    ctx.fillText('CAMERA OFF', width / 2, height / 2 - 10);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '500 15px "JetBrains Mono", monospace';
+    ctx.fillText('Click Camera On or Unlock Camera & Mic to resume feed', width / 2, height / 2 + 26);
   }
 }
 
@@ -481,7 +503,6 @@ function drawSoloNameplate(
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
-  // Speaker dot
   ctx.fillStyle = isSpeaking ? '#22c55e' : '#64748b';
   ctx.beginPath();
   ctx.arc(x + 20, y + 24, 5, 0, Math.PI * 2);
@@ -511,7 +532,6 @@ function drawLowerThirdBanner(
   const bannerH = 58;
 
   ctx.save();
-  // Backdrop
   const grad = ctx.createLinearGradient(x, y, x + bannerW, y);
   grad.addColorStop(0, 'rgba(10, 12, 18, 0.95)');
   grad.addColorStop(0.8, 'rgba(15, 20, 32, 0.9)');
@@ -522,17 +542,14 @@ function drawLowerThirdBanner(
   ctx.roundRect(x, y, bannerW, bannerH, 8);
   ctx.fill();
 
-  // Left accent line
   ctx.fillStyle = branding.themeColor || '#6366f1';
   ctx.fillRect(x, y, 5, bannerH);
 
-  // Podcast tag
   ctx.fillStyle = '#94a3b8';
   ctx.font = '700 11px "JetBrains Mono", monospace';
   ctx.textAlign = 'left';
   ctx.fillText(branding.podcastName.toUpperCase(), x + 20, y + 20);
 
-  // Episode title
   ctx.fillStyle = '#ffffff';
   ctx.font = '700 18px "Plus Jakarta Sans", sans-serif';
   ctx.fillText(branding.episodeTitle, x + 20, y + 44);
@@ -545,7 +562,6 @@ function drawStudioHeader(ctx: CanvasRenderingContext2D, podcastName: string): v
   const x = 48;
   const y = 48;
 
-  // Top studio logo badge
   ctx.fillStyle = 'rgba(15, 17, 26, 0.75)';
   ctx.beginPath();
   ctx.roundRect(x, y, 220, 34, 6);
@@ -555,7 +571,6 @@ function drawStudioHeader(ctx: CanvasRenderingContext2D, podcastName: string): v
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Mic glyph / dot
   ctx.fillStyle = '#6366f1';
   ctx.beginPath();
   ctx.arc(x + 16, y + 17, 4, 0, Math.PI * 2);
@@ -590,7 +605,6 @@ function drawRecordingIndicator(
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
-  // Pulsing dot if recording
   if (isRecording) {
     const pulse = Math.abs(Math.sin(Date.now() / 300));
     ctx.fillStyle = `rgba(239, 68, 68, ${0.4 + pulse * 0.6})`;
@@ -614,7 +628,6 @@ function drawRecordingIndicator(
     ctx.fillText('STANDBY', x + 28, y + 22);
   }
 
-  // Timer format (HH:MM:SS)
   const hrs = Math.floor(recordingTimeSeconds / 3600);
   const mins = Math.floor((recordingTimeSeconds % 3600) / 60);
   const secs = Math.floor(recordingTimeSeconds % 60);

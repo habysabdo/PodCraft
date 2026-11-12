@@ -21,7 +21,7 @@ interface ShowNotesModalProps {
   onClose: () => void;
   podcastName: string;
   hostName: string;
-  guestName: string;
+  guestName?: string;
   durationSeconds: number;
   chapterMarkers: ChapterMarker[];
   transcript: string;
@@ -35,7 +35,7 @@ export const ShowNotesModal: React.FC<ShowNotesModalProps> = ({
   onClose,
   podcastName,
   hostName,
-  guestName,
+  guestName = '',
   durationSeconds,
   chapterMarkers,
   transcript,
@@ -100,8 +100,12 @@ export const ShowNotesModal: React.FC<ShowNotesModalProps> = ({
   const getFullMarkdown = (): string => {
     if (!notesData) return '';
 
+    const byline = guestName
+      ? `*Show: ${podcastName} | Host: ${hostName} | Guest: ${guestName}*`
+      : `*Show: ${podcastName} | Host: ${hostName}*`;
+
     return `# ${notesData.episodeTitle}
-*Show: ${podcastName} | Host: ${hostName} | Guest: ${guestName}*
+${byline}
 
 ## Summary
 ${notesData.summary}
@@ -189,7 +193,7 @@ ${notesData.socialPromo.linkedinPost}
 
                 <div>
                   <label className="text-xs font-semibold text-slate-400 block mb-1">
-                    Primary Topic or Guest Focus (Optional custom cue)
+                    Primary Topic or Reaction Focus (Optional custom cue)
                   </label>
                   <input
                     type="text"

@@ -10,6 +10,7 @@ import {
   RotateCcw,
   Monitor,
   Video,
+  VideoOff,
   Wand2,
   FlipHorizontal,
 } from 'lucide-react';
@@ -25,6 +26,9 @@ interface ChannelControlsProps {
   onUpdateChannel: (updated: Partial<ChannelConfig>) => void;
   onUpdateFilters: (filters: Partial<VideoFilterSettings>) => void;
   onUpdateAudio: (audio: Partial<AudioFilterSettings>) => void;
+  isCameraOn?: boolean;
+  onToggleCamera?: () => void;
+  onSelectVideoDevice?: (deviceId: string) => void;
 }
 
 const FILTER_PRESETS: Array<{ name: string; filters: VideoFilterSettings }> = [
@@ -62,6 +66,9 @@ export const ChannelControls: React.FC<ChannelControlsProps> = ({
   onUpdateChannel,
   onUpdateFilters,
   onUpdateAudio,
+  isCameraOn = false,
+  onToggleCamera,
+  onSelectVideoDevice,
 }) => {
   const [activeTab, setActiveTab] = useState<'audio' | 'video' | 'devices'>('audio');
 
@@ -117,6 +124,30 @@ export const ChannelControls: React.FC<ChannelControlsProps> = ({
               >
                 {channel.roleTitle}
               </span>
+              {onToggleCamera && (
+                <button
+                  type="button"
+                  onClick={onToggleCamera}
+                  className={`px-2 py-0.5 rounded text-[10px] font-semibold border flex items-center gap-1 transition-all cursor-pointer ${
+                    isCameraOn
+                      ? 'bg-emerald-600/20 text-emerald-300 border-emerald-500/50 hover:bg-emerald-600/30'
+                      : 'bg-red-950/60 text-red-300 border-red-700/60 hover:bg-red-900/60'
+                  }`}
+                  title={isCameraOn ? 'Turn Camera Off' : 'Turn Camera On'}
+                >
+                  {isCameraOn ? (
+                    <>
+                      <Video className="w-3 h-3 text-emerald-400" />
+                      <span>Cam On</span>
+                    </>
+                  ) : (
+                    <>
+                      <VideoOff className="w-3 h-3 text-red-400" />
+                      <span>Cam Off</span>
+                    </>
+                  )}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onUpdateFilters({ mirror: !channel.filters.mirror })}
@@ -132,11 +163,11 @@ export const ChannelControls: React.FC<ChannelControlsProps> = ({
               </button>
             </div>
             <p className="text-[11px] text-slate-400 px-1.5">
-              {channel.videoDeviceId === 'screen-share'
+              {!isCameraOn
+                ? 'Camera Off (Hardware Released)'
+                : channel.videoDeviceId === 'screen-share'
                 ? 'Screen Capture Active'
-                : channel.videoDeviceId
-                ? 'Live Hardware Camera'
-                : 'No Camera Selected'}
+                : 'Live Hardware Camera'}
             </p>
           </div>
         </div>
@@ -516,8 +547,15 @@ export const ChannelControls: React.FC<ChannelControlsProps> = ({
                 </button>
               </div>
               <select
-                value={channel.videoDeviceId}
-                onChange={(e) => onUpdateChannel({ videoDeviceId: e.target.value })}
+                value={isCameraOn ? channel.videoDeviceId : 'none'}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  if (onSelectVideoDevice) {
+                    onSelectVideoDevice(nextId);
+                  } else {
+                    onUpdateChannel({ videoDeviceId: nextId });
+                  }
+                }}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-white focus:border-blue-500 outline-none"
               >
                 <option value="none">No Camera (Disabled)</option>

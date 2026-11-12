@@ -7,15 +7,11 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Radio,
   Sparkles,
-  Layers,
-  Settings,
-  HelpCircle,
   AlertCircle,
   FileText,
-  Volume2,
   CheckCircle,
-  ChevronDown,
-  ChevronUp,
+  ScrollText,
+  ExternalLink,
 } from 'lucide-react';
 import {
   ChannelConfig,
@@ -25,10 +21,8 @@ import {
   VideoFilterSettings,
   AudioFilterSettings,
   ReactionMediaState,
-  ShowNotesData,
 } from './types/studio';
 import { useDevices } from './hooks/useDevices';
-import { useRemoteGuest } from './hooks/useRemoteGuest';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { audioStudio } from './utils/audioProcessor';
 import { BroadcastCanvasView } from './components/BroadcastCanvasView';
@@ -36,10 +30,8 @@ import { ChannelControls } from './components/ChannelControls';
 import { RecordingBar } from './components/RecordingBar';
 import { RecordingReviewModal } from './components/RecordingReviewModal';
 import { ShowNotesModal } from './components/ShowNotesModal';
-import { YouTubeCallback } from './components/YouTubeCallback';
 import { ReactionMediaControls } from './components/ReactionMediaControls';
-import { GuestJoinView } from './components/GuestJoinView';
-import { RemoteGuestInvite } from './components/RemoteGuestInvite';
+import { TeleprompterOverlay, TeleprompterFontSize } from './components/TeleprompterOverlay';
 import { detectAndParseMediaUrl } from './utils/urlDetector';
 
 const DEFAULT_FILTERS: VideoFilterSettings = {
@@ -48,7 +40,7 @@ const DEFAULT_FILTERS: VideoFilterSettings = {
   saturation: 100,
   warmth: 0,
   grayscale: false,
-  mirror: false,
+  mirror: false, // Un-mirrored by default for natural left/right orientation
   backgroundBlur: false,
 };
 
@@ -69,48 +61,29 @@ export default function App() {
     audioDevices,
     permissionGranted,
     error: deviceError,
-    requestPermissions,
-    acquireVideoStream,
+    markPermissionGranted,
+    setPermissionError,
+    clearError,
+    refreshDevices,
     acquireAudioStream,
   } = useDevices();
 
-  // Guest mode: ?guest=<code> renders the guest join screen instead of the
-  // studio (the early return sits just before the studio JSX below).
-  const [guestCode] = useState<string | null>(() => {
-    try {
-      return new URLSearchParams(window.location.search).get('guest');
-    } catch {
-      return null;
-    }
-  });
-
-  // YouTube OAuth return (Piece 3): Google redirects here with ?code=… after
-  // sign-in. The early return below renders the callback screen instead of
-  // the studio; it exchanges the code, then sends the user back.
-  const [isYouTubeCallback] = useState<boolean>(() => {
-    try {
-      return window.location.pathname === '/youtube-callback';
-    } catch {
-      return false;
-    }
-  });
-
   // Studio Branding & Lower Thirds
   const [branding, setBranding] = useState<StudioBranding>({
-    podcastName: 'The Founders & Creators Show',
-    episodeTitle: 'Episode 42: The Architecture of Modern High-Impact Media',
+    podcastName: 'PodCraft Studio',
+    episodeTitle: 'Live Commentary & Reaction Broadcast',
     showLowerThird: true,
     themeColor: '#6366f1',
   });
 
-  // Active Broadcast Layout
-  const [layout, setLayout] = useState<LayoutMode>('side-by-side');
+  // Active Broadcast Layout (Defaults to Single-Host Webcam)
+  const [layout, setLayout] = useState<LayoutMode>('solo-host');
 
-  // Channels state (Channel 1: Host, Channel 2: Guest)
+  // Single-Host Channel Config
   const [hostConfig, setHostConfig] = useState<ChannelConfig>({
     id: 'host',
-    label: 'Channel 1 (Host)',
-    name: 'Alex Rivera',
+    label: 'Host Channel',
+    name: 'Host',
     roleTitle: 'Host',
     videoDeviceId: '',
     audioDeviceId: '',
@@ -118,97 +91,30 @@ export default function App() {
     audioSettings: { ...DEFAULT_AUDIO_SETTINGS },
   });
 
-  const [guestConfig, setGuestConfig] = useState<ChannelConfig>({
-    id: 'guest',
-    label: 'Channel 2 (Guest)',
-    name: 'Dr. Elena Vance',
-    roleTitle: 'Guest',
-    videoDeviceId: '',
-    audioDeviceId: '',
-    filters: { ...DEFAULT_FILTERS },
-    audioSettings: { ...DEFAULT_AUDIO_SETTINGS },
-  });
+  // Invisible Teleprompter Script Overlay State (purely HTML/CSS, never drawn to canvas)
+  const [showTeleprompter, setShowTeleprompter] = useState(false);
+  const [teleprompterScript, setTeleprompterScript] = useState('');
+  const [teleprompterFontSize, setTeleprompterFontSize] = useState<TeleprompterFontSize>('medium');
+  const [teleprompterSpeed, setTeleprompterSpeed] = useState(36);
+  const [teleprompterPlaying, setTeleprompterPlaying] = useState(false);
 
-  // Video references (hidden elements feeding frames to canvas)
+  // Video & Canvas references
   const hostVideoRef = useRef<HTMLVideoElement | null>(null);
-  const guestVideoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Active streams
-  const hostVideoStreamRef = useRef<MediaStream | null>(null);
-  const guestVideoStreamRef = useRef<MediaStream | null>(null);
+  // Active Host streams & camera request guard
+  const [hostStream, setHostStream] = useState<MediaStream | null>(null);
+  const hostStreamRef = useRef<MediaStream | null>(null);
   const hostAudioStreamRef = useRef<MediaStream | null>(null);
-  const guestAudioStreamRef = useRef<MediaStream | null>(null);
-
-  // ---- Remote guest (Piece 1) ----
-  // When a remote guest is live, their stream owns the Guest channel and the
-  // local guest hardware is stopped. When they leave, the local device
-  // setup below re-runs (guestRestoreBump) so the solo studio is untouched.
-  const [inviteRoomCode, setInviteRoomCode] = useState<string | null>(null);
-  const [inviteActive, setInviteActive] = useState(false);
-  const [remoteGuestStream, setRemoteGuestStream] = useState<MediaStream | null>(null);
-  const [guestRestoreBump, setGuestRestoreBump] = useState(0);
-  const remoteGuestStreamRef = useRef<MediaStream | null>(null);
-
-  const remoteGuest = useRemoteGuest({
-    roomCode: inviteRoomCode,
-    enabled: inviteActive,
-    onRemoteStream: (stream, name) => {
-      if (stream) {
-        remoteGuestStreamRef.current = stream;
-        setRemoteGuestStream(stream);
-        if (name) {
-          setGuestConfig((prev) => ({ ...prev, name }));
-        }
-        // Free the local guest hardware while the remote feed owns the channel.
-        if (guestVideoStreamRef.current) {
-          guestVideoStreamRef.current.getTracks().forEach((t) => t.stop());
-          guestVideoStreamRef.current = null;
-        }
-        if (guestAudioStreamRef.current) {
-          guestAudioStreamRef.current.getTracks().forEach((t) => t.stop());
-          guestAudioStreamRef.current = null;
-        }
-      } else {
-        remoteGuestStreamRef.current = null;
-        setRemoteGuestStream(null);
-        setGuestRestoreBump((b) => b + 1);
-      }
-    },
-  });
-
-  // Attach a remote guest stream to the existing guest channel: the hidden
-  // guest video element feeds the canvas, and the DSP audio graph gets the
-  // remote audio — VU meter, filters, composite and recording just work.
-  useEffect(() => {
-    if (remoteGuestStream) {
-      if (guestVideoRef.current) {
-        guestVideoRef.current.srcObject = remoteGuestStream;
-        guestVideoRef.current.play().catch(() => {});
-      }
-      audioStudio.attachChannelStream('guest', remoteGuestStream, guestConfig.audioSettings);
-    }
-  }, [remoteGuestStream]);
-
-  const createInvite = async () => {
-    try {
-      const res = await fetch('/api/rooms', { method: 'POST' });
-      const data = await res.json();
-      if (!data?.code) throw new Error('No room code returned');
-      setInviteRoomCode(data.code);
-      setInviteActive(true);
-    } catch (err) {
-      console.warn('Failed to create invite room:', err);
-    }
-  };
-
-  const endInvite = () => {
-    setInviteActive(false);
-    setInviteRoomCode(null);
-  };
+  const cameraRequestIdRef = useRef(0);
+  const hostVideoDeviceIdRef = useRef<string>('');
+  const hostAudioSettingsRef = useRef<AudioFilterSettings>(hostConfig.audioSettings);
 
   // Reaction Media & Screen Share
   const mediaVideoRef = useRef<HTMLVideoElement | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const [mediaState, setMediaState] = useState<ReactionMediaState>({
     type: 'none',
@@ -236,9 +142,6 @@ export default function App() {
   const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [showNotesModal, setShowNotesModal] = useState(false);
-  /** Last generated AI show notes (Piece 3) — the Review modal pre-fills the
-   *  YouTube title + description from these when they exist. */
-  const [showNotes, setShowNotes] = useState<ShowNotesData | null>(null);
   const [hasRecordedSession, setHasRecordedSession] = useState(false);
   const [currentRecordingFilename, setCurrentRecordingFilename] = useState('Podcast_Recording.webm');
   const previousRecordedUrlRef = useRef<string | null>(null);
@@ -256,125 +159,277 @@ export default function App() {
 
   // Live VU meter states
   const [hostVu, setHostVu] = useState({ rms: 0, peak: 0, db: -60, isClipping: false });
-  const [guestVu, setGuestVu] = useState({ rms: 0, peak: 0, db: -60, isClipping: false });
   const [masterVu, setMasterVu] = useState({ rms: 0, peak: 0, db: -60, isClipping: false });
   const [isMonitoring, setIsMonitoring] = useState(false);
 
   // Live Speech Recognition for Transcript
   const {
     transcript,
-    setTranscript,
     entries: transcriptEntries,
     isListening: isTranscriptListening,
     supported: isSpeechSupported,
     addManualNote,
-    clearTranscript,
   } = useSpeechRecognition(isRecording && !isPaused, recordingSeconds, hostConfig.name);
 
   const [showTranscriptDrawer, setShowTranscriptDrawer] = useState(false);
   const [manualNoteText, setManualNoteText] = useState('');
 
-  // Auto-select initial real hardware devices when detected
   useEffect(() => {
-    if (videoDevices.length > 0) {
-      if (!hostConfig.videoDeviceId) {
-        setHostConfig((prev) => ({ ...prev, videoDeviceId: videoDevices[0].deviceId }));
-      }
-      if (!guestConfig.videoDeviceId) {
-        const secondCam = videoDevices.length > 1 ? videoDevices[1].deviceId : videoDevices[0].deviceId;
-        setGuestConfig((prev) => ({ ...prev, videoDeviceId: secondCam }));
-      }
+    hostVideoDeviceIdRef.current = hostConfig.videoDeviceId;
+  }, [hostConfig.videoDeviceId]);
+
+  useEffect(() => {
+    hostAudioSettingsRef.current = hostConfig.audioSettings;
+  }, [hostConfig.audioSettings]);
+
+  useEffect(() => {
+    if (audioDevices.length > 0 && !hostConfig.audioDeviceId) {
+      setHostConfig((prev) => ({ ...prev, audioDeviceId: audioDevices[0].deviceId }));
     }
-  }, [videoDevices]);
+  }, [audioDevices, hostConfig.audioDeviceId]);
 
-  useEffect(() => {
-    if (audioDevices.length > 0) {
-      if (!hostConfig.audioDeviceId) {
-        setHostConfig((prev) => ({ ...prev, audioDeviceId: audioDevices[0].deviceId }));
-      }
-      if (!guestConfig.audioDeviceId) {
-        const secondMic = audioDevices.length > 1 ? audioDevices[1].deviceId : audioDevices[0].deviceId;
-        setGuestConfig((prev) => ({ ...prev, audioDeviceId: secondMic }));
-      }
+  // Cleanly stop all active camera tracks and release hardware
+  const stopCamera = useCallback(() => {
+    cameraRequestIdRef.current += 1;
+
+    const activeStream = hostStreamRef.current;
+    if (activeStream) {
+      activeStream.getTracks().forEach((track) => track.stop());
+      hostStreamRef.current = null;
     }
-  }, [audioDevices]);
 
-  // Sync Host Video Feed
-  useEffect(() => {
-    let isCancelled = false;
+    if (hostVideoRef.current) {
+      hostVideoRef.current.pause();
+      hostVideoRef.current.srcObject = null;
+    }
 
-    async function setupHostVideo() {
-      if (hostVideoStreamRef.current) {
-        hostVideoStreamRef.current.getTracks().forEach((t) => t.stop());
-        hostVideoStreamRef.current = null;
+    setHostStream(null);
+  }, []);
+
+  // Single unified async startCamera() used by Unlock Camera & Mic, Grant Access, Camera Toggle, and auto-start
+  const startCamera = useCallback(
+    async (overrideDeviceId?: string) => {
+      const requestId = ++cameraRequestIdRef.current;
+
+      // 1. Stop any leftover tracks first
+      const leftoverStream = hostStreamRef.current;
+      if (leftoverStream) {
+        leftoverStream.getTracks().forEach((track) => track.stop());
+        hostStreamRef.current = null;
       }
-
-      if (!hostConfig.videoDeviceId || hostConfig.videoDeviceId === 'none') {
-        if (hostVideoRef.current) {
-          hostVideoRef.current.srcObject = null;
-        }
-        return;
+      if (hostVideoRef.current) {
+        hostVideoRef.current.pause();
+        hostVideoRef.current.srcObject = null;
       }
+      setHostStream(null);
+
+      const candidateId =
+        overrideDeviceId !== undefined ? overrideDeviceId : hostVideoDeviceIdRef.current;
+      const selectedCameraId =
+        candidateId && candidateId !== 'none' && candidateId !== 'screen-share'
+          ? candidateId
+          : '';
 
       try {
-        const stream = await acquireVideoStream(hostConfig.videoDeviceId);
-        if (isCancelled) return;
+        let stream: MediaStream;
 
-        hostVideoStreamRef.current = stream;
-        if (hostVideoRef.current && stream) {
-          hostVideoRef.current.srcObject = stream;
-          hostVideoRef.current.play().catch(() => {});
+        if (candidateId === 'screen-share') {
+          stream = await navigator.mediaDevices.getDisplayMedia({
+            video: {
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+              frameRate: { ideal: 30 },
+            },
+            audio: false,
+          });
+        } else {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : true,
+              audio: true,
+            });
+          } catch (constraintErr: any) {
+            if (
+              selectedCameraId &&
+              (constraintErr?.name === 'OverconstrainedError' ||
+                constraintErr?.name === 'NotFoundError')
+            ) {
+              stream = await navigator.mediaDevices.getUserMedia({
+                video: true,
+                audio: true,
+              });
+            } else {
+              throw constraintErr;
+            }
+          }
         }
-      } catch (err) {
-        console.warn('Host video initialization error:', err);
+
+        // Abort cleanly if user stopped/toggled camera while waiting for permissions
+        if (requestId !== cameraRequestIdRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        // Clear any permission warning banner immediately once stream resolves
+        clearError();
+        markPermissionGranted();
+
+        // Attach new stream to <video> ref, wait for onloadedmetadata, and call play()
+        const video = hostVideoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          await new Promise<void>((resolve) => {
+            if (video.readyState >= 1) {
+              resolve();
+              return;
+            }
+            const onLoaded = () => {
+              video.onloadedmetadata = null;
+              resolve();
+            };
+            video.onloadedmetadata = onLoaded;
+          });
+
+          if (requestId !== cameraRequestIdRef.current) {
+            stream.getTracks().forEach((track) => track.stop());
+            video.srcObject = null;
+            return;
+          }
+
+          await video.play();
+        }
+
+        if (requestId !== cameraRequestIdRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          if (video) {
+            video.srcObject = null;
+          }
+          return;
+        }
+
+        hostStreamRef.current = stream;
+        setHostStream(stream);
+
+        // If no dedicated audio stream is attached yet, feed audio immediately until refreshDevices selects mic
+        if (!hostAudioStreamRef.current && stream.getAudioTracks().length > 0) {
+          audioStudio.attachChannelStream('host', stream, hostAudioSettingsRef.current);
+        }
+
+        const activeVideoTrack = stream.getVideoTracks()[0];
+        if (activeVideoTrack) {
+          const settings = activeVideoTrack.getSettings?.();
+          if (settings?.deviceId && candidateId !== 'screen-share') {
+            hostVideoDeviceIdRef.current = settings.deviceId;
+            setHostConfig((prev) =>
+              prev.videoDeviceId === settings.deviceId
+                ? prev
+                : { ...prev, videoDeviceId: settings.deviceId! }
+            );
+          }
+
+          activeVideoTrack.onended = () => {
+            if (hostStreamRef.current === stream) {
+              stopCamera();
+            }
+          };
+        }
+
+        await refreshDevices();
+      } catch (err: any) {
+        if (requestId !== cameraRequestIdRef.current) return;
+        console.error('Failed to start camera:', err);
+        setPermissionError(
+          err?.name === 'NotAllowedError'
+            ? 'Camera and microphone permission is required to access hardware devices.'
+            : err?.message || 'Unable to open camera. Please check permissions and hardware.'
+        );
+        await refreshDevices();
       }
+    },
+    [
+      clearError,
+      markPermissionGranted,
+      setPermissionError,
+      refreshDevices,
+      stopCamera,
+    ]
+  );
+
+  const handleToggleCamera = useCallback(() => {
+    if (hostStreamRef.current) {
+      stopCamera();
+    } else {
+      startCamera();
     }
+  }, [stopCamera, startCamera]);
 
-    setupHostVideo();
-    return () => {
-      isCancelled = true;
-    };
-  }, [hostConfig.videoDeviceId, acquireVideoStream]);
+  const handleSelectVideoDevice = useCallback(
+    (deviceId: string) => {
+      hostVideoDeviceIdRef.current = deviceId;
+      setHostConfig((prev) => ({ ...prev, videoDeviceId: deviceId }));
+      if (!deviceId || deviceId === 'none') {
+        stopCamera();
+      } else {
+        startCamera(deviceId);
+      }
+    },
+    [stopCamera, startCamera]
+  );
 
-  // Sync Guest Video Feed
+  // Auto-start the camera on initial page load if browser permissions were already granted
   useEffect(() => {
-    let isCancelled = false;
+    let cancelled = false;
 
-    async function setupGuestVideo() {
-      // A remote guest owns the guest channel — leave its stream alone.
-      if (remoteGuestStreamRef.current) return;
-
-      if (guestVideoStreamRef.current) {
-        guestVideoStreamRef.current.getTracks().forEach((t) => t.stop());
-        guestVideoStreamRef.current = null;
-      }
-
-      if (!guestConfig.videoDeviceId || guestConfig.videoDeviceId === 'none') {
-        if (guestVideoRef.current) {
-          guestVideoRef.current.srcObject = null;
-        }
-        return;
-      }
-
+    async function autoStartIfPermitted() {
       try {
-        const stream = await acquireVideoStream(guestConfig.videoDeviceId);
-        if (isCancelled) return;
-
-        guestVideoStreamRef.current = stream;
-        if (guestVideoRef.current && stream) {
-          guestVideoRef.current.srcObject = stream;
-          guestVideoRef.current.play().catch(() => {});
+        if (navigator.permissions && navigator.permissions.query) {
+          const status = await navigator.permissions.query({
+            name: 'camera' as PermissionName,
+          });
+          if (!cancelled && status.state === 'granted') {
+            await startCamera();
+            return;
+          }
         }
-      } catch (err) {
-        console.warn('Guest video initialization error:', err);
+      } catch {
+        // Fallback for browsers without permissions.query('camera') support
+        try {
+          const devices = await navigator.mediaDevices?.enumerateDevices?.();
+          const hasLabeledCamera = devices?.some(
+            (d) => d.kind === 'videoinput' && Boolean(d.label)
+          );
+          if (!cancelled && hasLabeledCamera) {
+            await startCamera();
+          }
+        } catch {
+          // Ignore enumeration error
+        }
       }
     }
 
-    setupGuestVideo();
+    autoStartIfPermitted();
     return () => {
-      isCancelled = true;
+      cancelled = true;
     };
-  }, [guestConfig.videoDeviceId, acquireVideoStream, guestRestoreBump]);
+  }, [startCamera]);
+
+  // Release any active camera/mic/screen tracks when component unmounts
+  useEffect(() => {
+    return () => {
+      if (hostStreamRef.current) {
+        hostStreamRef.current.getTracks().forEach((track) => track.stop());
+        hostStreamRef.current = null;
+      }
+      if (hostAudioStreamRef.current) {
+        hostAudioStreamRef.current.getTracks().forEach((track) => track.stop());
+        hostAudioStreamRef.current = null;
+      }
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((track) => track.stop());
+        screenStreamRef.current = null;
+      }
+    };
+  }, []);
 
   // Sync Host Audio Feed
   useEffect(() => {
@@ -408,49 +463,10 @@ export default function App() {
     };
   }, [hostConfig.audioDeviceId, acquireAudioStream]);
 
-  // Sync Guest Audio Feed
-  useEffect(() => {
-    let isCancelled = false;
-
-    async function setupGuestAudio() {
-      // A remote guest owns the guest channel — leave its stream alone.
-      if (remoteGuestStreamRef.current) return;
-
-      if (guestAudioStreamRef.current) {
-        guestAudioStreamRef.current.getTracks().forEach((t) => t.stop());
-        guestAudioStreamRef.current = null;
-      }
-
-      if (!guestConfig.audioDeviceId || guestConfig.audioDeviceId === 'none') {
-        audioStudio.attachChannelStream('guest', null, guestConfig.audioSettings);
-        return;
-      }
-
-      try {
-        const stream = await acquireAudioStream(guestConfig.audioDeviceId);
-        if (isCancelled) return;
-
-        guestAudioStreamRef.current = stream;
-        audioStudio.attachChannelStream('guest', stream, guestConfig.audioSettings);
-      } catch (err) {
-        console.warn('Guest audio initialization error:', err);
-      }
-    }
-
-    setupGuestAudio();
-    return () => {
-      isCancelled = true;
-    };
-  }, [guestConfig.audioDeviceId, acquireAudioStream, guestRestoreBump]);
-
-  // Update DSP settings on active channels
+  // Update DSP settings on Host channel
   useEffect(() => {
     audioStudio.updateChannelSettings('host', hostConfig.audioSettings);
   }, [hostConfig.audioSettings]);
-
-  useEffect(() => {
-    audioStudio.updateChannelSettings('guest', guestConfig.audioSettings);
-  }, [guestConfig.audioSettings]);
 
   // VU Meter Polling Loop (60fps level checking)
   useEffect(() => {
@@ -458,11 +474,9 @@ export default function App() {
 
     const pollMeters = () => {
       const hLevel = audioStudio.getChannelLevel('host');
-      const gLevel = audioStudio.getChannelLevel('guest');
       const mLevel = audioStudio.getChannelLevel('master');
 
       setHostVu(hLevel);
-      setGuestVu(gLevel);
       setMasterVu(mLevel);
 
       animId = requestAnimationFrame(pollMeters);
@@ -507,9 +521,6 @@ export default function App() {
 
     if (isIframeActive) {
       try {
-        // As requested: When recording starts with an external embedded iframe active,
-        // trigger getDisplayMedia({ video: true, audio: true }) automatically to capture
-        // the entire composite studio viewport and system audio without CORS errors.
         const tabStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
             width: { ideal: 1920 },
@@ -522,20 +533,23 @@ export default function App() {
         iframeCaptureStreamRef.current = tabStream;
         recordingVideoStream = tabStream;
 
-        // Mix tab audio into Web Audio processor
         if (tabStream.getAudioTracks().length > 0) {
           audioStudio.attachMediaStream(tabStream);
         }
 
-        // Auto-stop recording if user stops tab capture from browser bar
         const vTrack = tabStream.getVideoTracks()[0];
         if (vTrack) {
           vTrack.onended = () => {
             stopRecording();
           };
         }
-      } catch (err) {
+      } catch (err: any) {
+        const namePrefix = err?.name ? `${err.name}: ` : '';
+        const message =
+          err?.message ||
+          'Tab capture was cancelled or disallowed by browser permissions policy.';
         console.warn('Tab capture was cancelled or rejected by user:', err);
+        setMediaError(`${namePrefix}${message}`);
         return;
       }
     } else {
@@ -543,21 +557,20 @@ export default function App() {
         console.error('Canvas ref is missing');
         return;
       }
-      // Capture 30FPS video stream from the composited HTML5 Canvas
+      // Capture 30FPS video stream from the composited HTML5 Canvas (excludes Teleprompter overlay)
       recordingVideoStream = canvasRef.current.captureStream(30);
     }
 
-    // Capture mixed Web Audio stream (contains Host, Guest, and Media/Tab audio)
+    // Capture mixed Web Audio stream (combines Host microphone + added video/screen audio)
     const audioStream = audioStudio.getMixedStream();
 
-    // Combine tracks into a combined broadcast MediaStream
+    // Combine tracks into a broadcast MediaStream
     const combinedStream = new MediaStream();
     recordingVideoStream.getVideoTracks().forEach((track) => combinedStream.addTrack(track));
     if (audioStream) {
       audioStream.getAudioTracks().forEach((track) => combinedStream.addTrack(track));
     }
 
-    // Choose preferred mimeType supported by browser
     let options: MediaRecorderOptions = { mimeType: 'video/webm;codecs=vp9,opus' };
     if (!MediaRecorder.isTypeSupported(options.mimeType!)) {
       options = { mimeType: 'video/webm' };
@@ -577,29 +590,23 @@ export default function App() {
       };
 
       recorder.onstop = () => {
-        // Clean up any active displayMedia tracks from tab capture
         if (iframeCaptureStreamRef.current) {
           iframeCaptureStreamRef.current.getTracks().forEach((t) => t.stop());
           iframeCaptureStreamRef.current = null;
         }
 
-        // 1. Local-Only Storage: Assemble chunks strictly in client browser memory (RAM)
         let mimeType = 'video/webm;codecs=vp9,opus';
         if (!MediaRecorder.isTypeSupported(mimeType)) {
           mimeType = recorder.mimeType || 'video/webm';
         }
         const blob = new Blob(recordedChunksRef.current, { type: mimeType });
-
-        // 2. Generate local blob URL
         const url = window.URL.createObjectURL(blob);
 
-        // Revoke previous object URL if any to free client device memory
         if (previousRecordedUrlRef.current) {
           window.URL.revokeObjectURL(previousRecordedUrlRef.current);
         }
         previousRecordedUrlRef.current = url;
 
-        // 3. Format filename: Podcast_Recording_[TIMESTAMP].webm
         const now = new Date();
         const pad = (n: number) => String(n).padStart(2, '0');
         const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
@@ -612,7 +619,7 @@ export default function App() {
         setHasRecordedSession(true);
         lastRecordingDurationRef.current = recordingSeconds;
 
-        // 4. Instant local browser download directly to user's PC or phone storage
+        // Instant local browser download directly to user's device storage
         const a = document.createElement('a');
         a.href = url;
         a.download = filename;
@@ -621,7 +628,7 @@ export default function App() {
         document.body.removeChild(a);
       };
 
-      recorder.start(1000); // 1-second chunks
+      recorder.start(1000);
       mediaRecorderRef.current = recorder;
 
       setRecordingSeconds(0);
@@ -630,7 +637,7 @@ export default function App() {
           id: 'intro',
           timestampSeconds: 0,
           formattedTime: '00:00',
-          label: 'Show Intro & Welcoming Guest',
+          label: 'Show Intro & Opening',
         },
       ]);
       setIsRecording(true);
@@ -686,46 +693,107 @@ export default function App() {
     addManualNote(`[Chapter Marked: ${newMarker.label}]`, hostConfig.name);
   };
 
-  // Media & Screen Share Actions
-  const handleStartScreenShare = async () => {
+  // Cleanly stop active screen share tracks and reset UI state
+  const stopScreenShare = useCallback(() => {
+    const activeScreen = screenStreamRef.current;
+    if (activeScreen) {
+      activeScreen.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current = null;
+    }
+
+    if (screenVideoRef.current) {
+      screenVideoRef.current.pause();
+      screenVideoRef.current.srcObject = null;
+    }
+
+    setScreenStream(null);
+    audioStudio.attachMediaStream(null);
+
+    setMediaState({
+      type: 'none',
+      title: 'No Media Loaded',
+      isPlaying: false,
+      currentTime: 0,
+      duration: 0,
+      volume: 0.85,
+      muted: false,
+    });
+    setLayout('solo-host');
+  }, []);
+
+  // Direct user-gesture handler for Share Screen / Tab (getDisplayMedia must run synchronously on click)
+  const startScreenShare = useCallback(async () => {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        throw new Error(
+          'Screen sharing (getDisplayMedia) is not supported or is blocked in this browser environment.'
+        );
+      }
+
+      // Invoke getDisplayMedia directly inside the click handler before any async/state delays
+      const nextScreenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true,
+      });
+
       setMediaError(null);
+
+      // Stop any prior screen/media tracks after the new stream resolves
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
       if (mediaStreamRef.current) {
         mediaStreamRef.current.getTracks().forEach((t) => t.stop());
         mediaStreamRef.current = null;
       }
-
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 30 },
-        },
-        audio: true,
-      });
-
-      mediaStreamRef.current = stream;
-
       if (mediaVideoRef.current) {
-        mediaVideoRef.current.src = '';
-        mediaVideoRef.current.srcObject = stream;
-        mediaVideoRef.current.play().catch(() => {});
+        mediaVideoRef.current.pause();
+        mediaVideoRef.current.srcObject = null;
+        mediaVideoRef.current.removeAttribute('src');
+        mediaVideoRef.current.load();
+      }
+      audioStudio.attachMediaElement(null);
+
+      screenStreamRef.current = nextScreenStream;
+      setScreenStream(nextScreenStream);
+
+      if (screenVideoRef.current) {
+        screenVideoRef.current.muted = true;
+        screenVideoRef.current.srcObject = nextScreenStream;
+        await new Promise<void>((resolve) => {
+          const v = screenVideoRef.current;
+          if (!v || v.readyState >= 1) {
+            resolve();
+            return;
+          }
+          const onMeta = () => {
+            v.onloadedmetadata = null;
+            resolve();
+          };
+          v.onloadedmetadata = onMeta;
+        });
+        await screenVideoRef.current.play();
       }
 
-      // Route screen audio through Web Audio
-      audioStudio.attachMediaStream(stream);
+      // Route shared tab/screen audio into Master AudioContext for live playback & recording
+      await audioStudio.ensureContextRunning();
+      if (nextScreenStream.getAudioTracks().length > 0) {
+        audioStudio.attachMediaStream(nextScreenStream);
+        audioStudio.setMediaVolume(0.85, false);
+      } else {
+        audioStudio.attachMediaStream(null);
+      }
 
-      // Listen for when user clicks native "Stop Sharing" floating bar
-      const videoTrack = stream.getVideoTracks()[0];
+      const videoTrack = nextScreenStream.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.onended = () => {
-          handleEjectMedia();
+          stopScreenShare();
         };
       }
 
       setMediaState({
         type: 'screen',
-        title: 'Live Screen / Browser Tab',
+        title: videoTrack?.label || 'Live Screen / Browser Tab',
         isPlaying: true,
         currentTime: 0,
         duration: 0,
@@ -733,15 +801,31 @@ export default function App() {
         muted: false,
       });
 
-      // Automatically switch layout to Reaction Split
+      // Automatically switch into Audience Dual-View (Reaction Split 70/30)
       setLayout('reaction-split');
-    } catch (err) {
-      console.warn('Screen share cancelled or rejected:', err);
+    } catch (err: any) {
+      const namePrefix = err?.name ? `${err.name}: ` : '';
+      const message =
+        err?.message ||
+        'Screen sharing was cancelled, denied, or blocked by iframe permissions policy.';
+      console.error('startScreenShare failed:', err);
+      setMediaError(`${namePrefix}${message}`);
     }
-  };
+  }, [stopScreenShare]);
 
-  const handleLoadLocalFile = (file: File) => {
+  const handleLoadLocalFile = async (file: File) => {
     setMediaError(null);
+    await audioStudio.ensureContextRunning();
+
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = null;
+      setScreenStream(null);
+    }
+    if (screenVideoRef.current) {
+      screenVideoRef.current.pause();
+      screenVideoRef.current.srcObject = null;
+    }
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
@@ -749,10 +833,14 @@ export default function App() {
 
     const objectUrl = URL.createObjectURL(file);
     if (mediaVideoRef.current) {
+      // Unmute element so createMediaElementSource captures its audio into Master AudioContext
+      mediaVideoRef.current.muted = false;
+      mediaVideoRef.current.volume = 0.85;
       mediaVideoRef.current.srcObject = null;
       mediaVideoRef.current.src = objectUrl;
       mediaVideoRef.current.play().catch(() => {});
       audioStudio.attachMediaElement(mediaVideoRef.current);
+      audioStudio.setMediaVolume(0.85, false);
     }
 
     setMediaState({
@@ -765,6 +853,7 @@ export default function App() {
       muted: false,
     });
 
+    // Automatically switch to Audience Dual-View (Reaction Split 70/30)
     setLayout('reaction-split');
   };
 
@@ -777,16 +866,24 @@ export default function App() {
       return;
     }
 
-    // Stop active screen share tracks
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = null;
+      setScreenStream(null);
+    }
+    if (screenVideoRef.current) {
+      screenVideoRef.current.pause();
+      screenVideoRef.current.srcObject = null;
+    }
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
     }
-    // Pause any native media video element
     if (mediaVideoRef.current) {
       mediaVideoRef.current.pause();
       mediaVideoRef.current.srcObject = null;
-      mediaVideoRef.current.src = '';
+      mediaVideoRef.current.removeAttribute('src');
+      mediaVideoRef.current.load();
     }
     audioStudio.attachMediaElement(null);
 
@@ -803,12 +900,22 @@ export default function App() {
       rawUrl: detected.rawUrl,
     });
 
-    // Default to Reaction PiP mode for rich commentary
     setLayout('reaction-pip');
   };
 
-  const handleLoadUrl = (url: string) => {
+  const handleLoadUrl = async (url: string) => {
     setMediaError(null);
+    await audioStudio.ensureContextRunning();
+
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = null;
+      setScreenStream(null);
+    }
+    if (screenVideoRef.current) {
+      screenVideoRef.current.pause();
+      screenVideoRef.current.srcObject = null;
+    }
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
@@ -816,6 +923,8 @@ export default function App() {
 
     if (mediaVideoRef.current) {
       const video = mediaVideoRef.current;
+      video.muted = false;
+      video.volume = 0.85;
       video.srcObject = null;
       video.crossOrigin = 'anonymous';
       video.src = url;
@@ -824,6 +933,7 @@ export default function App() {
         console.warn('Video play triggered, waiting for user gesture or buffer:', err);
       });
       audioStudio.attachMediaElement(video);
+      audioStudio.setMediaVolume(0.85, false);
     }
 
     const parsedTitle = url.split('/').pop()?.split('?')[0] || 'Remote Video Stream';
@@ -874,7 +984,7 @@ export default function App() {
 
   const handleMediaVolume = (vol: number) => {
     audioStudio.setMediaVolume(vol, mediaState.muted);
-    if (mediaVideoRef.current) {
+    if (mediaVideoRef.current && mediaState.type !== 'screen') {
       mediaVideoRef.current.volume = vol;
     }
     setMediaState((prev) => ({ ...prev, volume: vol }));
@@ -883,7 +993,7 @@ export default function App() {
   const handleToggleMediaMute = () => {
     const nextMuted = !mediaState.muted;
     audioStudio.setMediaVolume(mediaState.volume, nextMuted);
-    if (mediaVideoRef.current) {
+    if (mediaVideoRef.current && mediaState.type !== 'screen') {
       mediaVideoRef.current.muted = nextMuted;
     }
     setMediaState((prev) => ({ ...prev, muted: nextMuted }));
@@ -895,6 +1005,15 @@ export default function App() {
       iframeCaptureStreamRef.current.getTracks().forEach((t) => t.stop());
       iframeCaptureStreamRef.current = null;
     }
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = null;
+      setScreenStream(null);
+    }
+    if (screenVideoRef.current) {
+      screenVideoRef.current.pause();
+      screenVideoRef.current.srcObject = null;
+    }
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
@@ -902,7 +1021,8 @@ export default function App() {
     if (mediaVideoRef.current) {
       mediaVideoRef.current.pause();
       mediaVideoRef.current.srcObject = null;
-      mediaVideoRef.current.src = '';
+      mediaVideoRef.current.removeAttribute('src');
+      mediaVideoRef.current.load();
     }
     audioStudio.attachMediaStream(null);
     audioStudio.attachMediaElement(null);
@@ -915,9 +1035,8 @@ export default function App() {
       volume: 0.85,
       muted: false,
     });
-    if (layout === 'reaction-split' || layout === 'reaction-pip') {
-      setLayout('side-by-side');
-    }
+    // Return to Single-Host webcam mode
+    setLayout('solo-host');
   };
 
   // Toggle Headphones Monitoring
@@ -927,19 +1046,9 @@ export default function App() {
     audioStudio.setMonitoring(next);
   };
 
-  // YouTube OAuth return: exchange the code, then back to the studio.
-  if (isYouTubeCallback) {
-    return <YouTubeCallback />;
-  }
-
-  // Guest mode: ?guest=<code> opens the join screen instead of the studio.
-  if (guestCode) {
-    return <GuestJoinView code={guestCode} />;
-  }
-
   return (
     <div className="min-h-screen bg-[#07090e] text-slate-100 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
-      {/* Real hardware video elements feeding live decoded frames to canvas compositor */}
+      {/* Real hardware Host video element feeding live decoded frames to canvas compositor */}
       <video
         ref={hostVideoRef}
         autoPlay
@@ -956,8 +1065,10 @@ export default function App() {
           transform: hostConfig.filters.mirror ? 'scaleX(-1)' : 'scaleX(1)',
         }}
       />
+
+      {/* Dedicated offscreen screen-share video element (muted so tab audio mixes via Web Audio API) */}
       <video
-        ref={guestVideoRef}
+        ref={screenVideoRef}
         autoPlay
         playsInline
         muted
@@ -969,10 +1080,10 @@ export default function App() {
           height: 720,
           opacity: 0,
           pointerEvents: 'none',
-          transform: guestConfig.filters.mirror ? 'scaleX(-1)' : 'scaleX(1)',
         }}
       />
-      {/* Offscreen media / screen share video element */}
+
+      {/* Offscreen media file / direct URL video element */}
       <video
         ref={mediaVideoRef}
         playsInline
@@ -982,6 +1093,7 @@ export default function App() {
         }}
         onError={() => {
           const video = mediaVideoRef.current;
+          if (!video || !video.getAttribute('src')) return;
           const code = video?.error?.code;
           let msg = 'Failed to load video stream. The link may be invalid, unavailable, or blocked by CORS.';
           if (code === 1) msg = 'Video loading was aborted.';
@@ -1017,43 +1129,71 @@ export default function App() {
         style={{ position: 'fixed', top: -9999, left: -9999, width: 1280, height: 720, opacity: 0, pointerEvents: 'none' }}
       />
 
+      {/* Invisible Teleprompter Script Overlay (HTML/CSS UI only — never drawn onto <canvas>) */}
+      <TeleprompterOverlay
+        isOpen={showTeleprompter}
+        onClose={() => {
+          setTeleprompterPlaying(false);
+          setShowTeleprompter(false);
+        }}
+        script={teleprompterScript}
+        onChangeScript={setTeleprompterScript}
+        fontSize={teleprompterFontSize}
+        onChangeFontSize={setTeleprompterFontSize}
+        scrollSpeed={teleprompterSpeed}
+        onChangeScrollSpeed={setTeleprompterSpeed}
+        isPlaying={teleprompterPlaying}
+        onTogglePlay={() => setTeleprompterPlaying((prev) => !prev)}
+      />
+
       {/* Broadcast Studio Top Navbar */}
-      <header className="border-b border-slate-800/80 bg-slate-950/80 backdrop-blur sticky top-0 z-40 px-4 lg:px-6 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <header className="border-b border-slate-800/80 bg-slate-950/90 backdrop-blur sticky top-0 z-40 px-4 lg:px-6 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 shrink-0">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <Radio className="w-5 h-5 text-white animate-pulse" />
+            <Radio className="w-5 h-5 text-white" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h1 className="font-extrabold text-base tracking-tight text-white">
-                PodCraft Studio
-              </h1>
-              <span className="text-[10px] font-mono font-bold bg-blue-950 text-blue-400 border border-blue-800/60 px-2 py-0.5 rounded-full uppercase tracking-wider">
-                Broadcast Pro
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-400">
-              Dual-Camera Studio • Web Audio DSP • Gemini AI Show Notes
+            <h1 className="font-extrabold text-base tracking-tight text-white whitespace-nowrap">
+              PodCraft Studio
+            </h1>
+            <p className="text-[11px] text-slate-400 whitespace-nowrap">
+              Single-Host Reaction & Teleprompter Broadcast Studio
             </p>
           </div>
         </div>
 
-        {/* Global actions & Permission button */}
-        <div className="flex items-center gap-3">
+        {/* Top Toolbar Controls */}
+        <div className="flex flex-wrap items-center gap-2.5">
           {!permissionGranted && (
             <button
-              onClick={requestPermissions}
-              className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-600/30 transition-all cursor-pointer"
+              onClick={() => startCamera()}
+              className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-600/30 transition-all cursor-pointer whitespace-nowrap shrink-0"
             >
               <CheckCircle className="w-3.5 h-3.5" />
-              Unlock Devices Access
+              Unlock Camera & Mic
             </button>
           )}
 
+          {/* Teleprompter Script Toggle Button */}
+          <button
+            type="button"
+            onClick={() => setShowTeleprompter((prev) => !prev)}
+            className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+              showTeleprompter
+                ? 'bg-sky-600 text-white border-sky-400 shadow-md shadow-sky-600/30'
+                : 'bg-slate-900 text-slate-200 border-slate-800 hover:bg-slate-800'
+            }`}
+            title="Toggle floating Teleprompter Script overlay (visible only to you, not recorded)"
+          >
+            <ScrollText className={`w-3.5 h-3.5 ${showTeleprompter ? 'text-white' : 'text-sky-400'}`} />
+            Teleprompter Script
+          </button>
+
           {/* Transcript Drawer Toggle */}
           <button
+            type="button"
             onClick={() => setShowTranscriptDrawer(!showTranscriptDrawer)}
-            className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+            className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap shrink-0 ${
               showTranscriptDrawer
                 ? 'bg-slate-800 text-white border-blue-500/50'
                 : 'bg-slate-900 text-slate-300 border-slate-800 hover:bg-slate-800'
@@ -1062,7 +1202,7 @@ export default function App() {
             <FileText className="w-3.5 h-3.5 text-blue-400" />
             Live Transcript
             {transcriptEntries.length > 0 && (
-              <span className="bg-blue-600 text-white text-[10px] px-1.5 py-0.2 rounded-full font-mono">
+              <span className="bg-blue-600 text-white text-[10px] px-1.5 py-0.2 rounded-full font-mono tabular-nums">
                 {transcriptEntries.length}
               </span>
             )}
@@ -1070,8 +1210,9 @@ export default function App() {
 
           {/* Gemini AI Show Notes Trigger */}
           <button
+            type="button"
             onClick={() => setShowNotesModal(true)}
-            className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:brightness-110 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-purple-600/30 transition-all cursor-pointer"
+            className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:brightness-110 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-purple-600/30 transition-all cursor-pointer whitespace-nowrap shrink-0"
           >
             <Sparkles className="w-3.5 h-3.5 text-purple-200" />
             AI Show Notes
@@ -1089,11 +1230,53 @@ export default function App() {
               <span>{deviceError}</span>
             </div>
             <button
-              onClick={requestPermissions}
-              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded text-xs font-bold"
+              onClick={() => startCamera()}
+              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded text-xs font-bold cursor-pointer"
             >
               Grant Access
             </button>
+          </div>
+        )}
+
+        {/* Visible Screen Share / Media Alert Banner */}
+        {mediaError && (
+          <div
+            role="alert"
+            className="p-3 bg-red-950/60 border border-red-700/80 rounded-xl text-xs text-red-200 flex flex-wrap items-center justify-between gap-3"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+              <div className="space-y-0.5">
+                <div>
+                  <strong className="text-red-300">Screen Share / Media Error:</strong> {mediaError}
+                </div>
+                {(mediaError.includes('display-capture') || mediaError.includes('permissions policy')) && (
+                  <div className="text-[11px] text-red-200/80">
+                    The surrounding preview iframe blocked <code className="font-mono text-red-200">display-capture</code>. Reload the preview or open the studio directly in a new browser tab to share any screen or tab.
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {(mediaError.includes('display-capture') || mediaError.includes('permissions policy')) && (
+                <a
+                  href={typeof window !== 'undefined' ? window.location.href : '/'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-2.5 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded text-xs font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  Open in New Tab
+                </a>
+              )}
+              <button
+                type="button"
+                onClick={() => setMediaError(null)}
+                className="px-2.5 py-1 bg-red-800/80 hover:bg-red-700 text-white rounded text-xs font-bold cursor-pointer shrink-0"
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
 
@@ -1102,36 +1285,30 @@ export default function App() {
           <BroadcastCanvasView
             canvasRef={canvasRef}
             hostVideoRef={hostVideoRef}
-            guestVideoRef={guestVideoRef}
             mediaVideoRef={mediaVideoRef}
+            screenVideoRef={screenVideoRef}
+            screenStream={screenStream}
             mediaTitle={mediaState.title}
             mediaState={mediaState}
             isMediaActive={mediaState.type !== 'none'}
             layout={layout}
             setLayout={setLayout}
             hostFilters={hostConfig.filters}
-            guestFilters={guestConfig.filters}
             hostName={hostConfig.name}
-            guestName={guestConfig.name}
             branding={branding}
             setBranding={setBranding}
             isRecording={isRecording}
             recordingTimeSeconds={recordingSeconds}
             hostVuLevel={hostVu.rms}
-            guestVuLevel={guestVu.rms}
-            hostStream={hostVideoStreamRef.current}
+            hostStream={hostStream}
+            isCameraOn={Boolean(hostStream)}
+            onToggleCamera={handleToggleCamera}
             onTogglePlayPause={handleTogglePlayPause}
             onVolumeChange={handleMediaVolume}
             onToggleMute={handleToggleMediaMute}
             onEjectMedia={handleEjectMedia}
             onToggleHostMirror={() =>
               setHostConfig((prev) => ({
-                ...prev,
-                filters: { ...prev.filters, mirror: !prev.filters.mirror },
-              }))
-            }
-            onToggleGuestMirror={() =>
-              setGuestConfig((prev) => ({
                 ...prev,
                 filters: { ...prev.filters, mirror: !prev.filters.mirror },
               }))
@@ -1145,7 +1322,7 @@ export default function App() {
             mediaState={mediaState}
             mediaError={mediaError}
             onClearError={() => setMediaError(null)}
-            onStartScreenShare={handleStartScreenShare}
+            onStartScreenShare={startScreenShare}
             onLoadLocalFile={handleLoadLocalFile}
             onLoadUrl={handleLoadUrl}
             onEmbedAndReact={handleEmbedAndReact}
@@ -1159,7 +1336,7 @@ export default function App() {
           />
         </section>
 
-        {/* 2. Recording Status Toolbar & Master Audio */}
+        {/* 3. Recording Status Toolbar & Master Audio */}
         <section>
           <RecordingBar
             isRecording={isRecording}
@@ -1181,26 +1358,16 @@ export default function App() {
           />
         </section>
 
-        {/* 2b. Remote Guest Invite */}
+        {/* 4. Single-Host Camera, Audio & Filter Controls */}
         <section>
-          <RemoteGuestInvite
-            status={remoteGuest.status}
-            roomCode={inviteRoomCode}
-            guestName={remoteGuest.guestName}
-            error={remoteGuest.error}
-            onCreateInvite={createInvite}
-            onEndInvite={endInvite}
-          />
-        </section>
-
-        {/* 3. Dual Channel Controls Racks (Host Channel & Guest Channel side-by-side) */}
-        <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Channel 1: Host */}
           <ChannelControls
             channel={hostConfig}
             videoDevices={videoDevices}
             audioDevices={audioDevices}
             vuLevel={hostVu}
+            isCameraOn={Boolean(hostStream)}
+            onToggleCamera={handleToggleCamera}
+            onSelectVideoDevice={handleSelectVideoDevice}
             onUpdateChannel={(updated) => setHostConfig((prev) => ({ ...prev, ...updated }))}
             onUpdateFilters={(filters) =>
               setHostConfig((prev) => ({
@@ -1215,30 +1382,9 @@ export default function App() {
               }))
             }
           />
-
-          {/* Channel 2: Guest */}
-          <ChannelControls
-            channel={guestConfig}
-            videoDevices={videoDevices}
-            audioDevices={audioDevices}
-            vuLevel={guestVu}
-            onUpdateChannel={(updated) => setGuestConfig((prev) => ({ ...prev, ...updated }))}
-            onUpdateFilters={(filters) =>
-              setGuestConfig((prev) => ({
-                ...prev,
-                filters: { ...prev.filters, ...filters },
-              }))
-            }
-            onUpdateAudio={(audio) =>
-              setGuestConfig((prev) => ({
-                ...prev,
-                audioSettings: { ...prev.audioSettings, ...audio },
-              }))
-            }
-          />
         </section>
 
-        {/* 4. Live Speech Recognition & Transcript Drawer */}
+        {/* 5. Live Speech Recognition & Transcript Drawer */}
         {showTranscriptDrawer && (
           <section className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl space-y-3">
             <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
@@ -1250,22 +1396,21 @@ export default function App() {
                 <span
                   className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${
                     isTranscriptListening
-                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-800 animate-pulse'
+                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
                       : 'bg-slate-800 text-slate-400'
                   }`}
                 >
-                  {isTranscriptListening ? '● LISTENING (MIC ACTIVE)' : 'IDLE'}
+                  {isTranscriptListening ? 'LISTENING (MIC ACTIVE)' : 'IDLE'}
                 </span>
               </div>
               <button
                 onClick={() => setShowTranscriptDrawer(false)}
-                className="text-xs text-slate-400 hover:text-white"
+                className="text-xs text-slate-400 hover:text-white cursor-pointer"
               >
                 Close Drawer
               </button>
             </div>
 
-            {/* Transcript stream */}
             <div className="max-h-56 overflow-y-auto space-y-2 font-mono text-xs p-3 bg-slate-950/80 rounded-xl border border-slate-800">
               {transcriptEntries.length === 0 ? (
                 <p className="text-slate-500 italic">
@@ -1284,7 +1429,6 @@ export default function App() {
               )}
             </div>
 
-            {/* Manual note / talking point prompt */}
             <div className="flex items-center gap-2">
               <input
                 type="text"
@@ -1324,9 +1468,6 @@ export default function App() {
         durationSeconds={lastRecordingDurationRef.current || recordingSeconds}
         filename={currentRecordingFilename}
         onGenerateShowNotes={() => setShowNotesModal(true)}
-        transcriptEntries={transcriptEntries}
-        chapterMarkers={chapterMarkers}
-        showNotes={showNotes}
       />
 
       {/* Gemini AI Show Notes Modal */}
@@ -1335,11 +1476,10 @@ export default function App() {
         onClose={() => setShowNotesModal(false)}
         podcastName={branding.podcastName}
         hostName={hostConfig.name}
-        guestName={guestConfig.name}
+        guestName=""
         durationSeconds={recordingSeconds || lastRecordingDurationRef.current || 180}
         chapterMarkers={chapterMarkers}
         transcript={transcript}
-        onShowNotesGenerated={setShowNotes}
       />
     </div>
   );

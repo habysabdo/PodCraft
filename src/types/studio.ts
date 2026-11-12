@@ -1,8 +1,5 @@
 export type LayoutMode =
-  | 'side-by-side'
-  | 'pip'
   | 'solo-host'
-  | 'solo-guest'
   | 'reaction-split'
   | 'reaction-pip';
 
@@ -34,7 +31,7 @@ export interface VideoFilterSettings {
   saturation: number; // 0 - 200 (100 is normal)
   warmth: number;     // 0 - 100 (warm tint overlay / sepia balance)
   grayscale: boolean; // true = black & white
-  mirror?: boolean;   // true = horizontally flipped / mirror preview
+  mirror?: boolean;   // true = horizontally flipped / mirror preview (default false = natural)
   backgroundBlur?: boolean; // true = CanvasRenderingContext2D blur(10px) filter
 }
 
@@ -50,7 +47,7 @@ export interface AudioFilterSettings {
 }
 
 export interface ChannelConfig {
-  id: 'host' | 'guest';
+  id: 'host';
   label: string;
   name: string;
   roleTitle: string;

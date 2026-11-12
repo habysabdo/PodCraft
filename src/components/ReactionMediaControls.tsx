@@ -13,6 +13,7 @@ import {
   Radio,
   CheckCircle2,
   AlertTriangle,
+  ExternalLink,
 } from 'lucide-react';
 import { LayoutMode, ReactionMediaState } from '../types/studio';
 
@@ -140,6 +141,7 @@ export const ReactionMediaControls: React.FC<ReactionMediaControlsProps> = ({
         <div className="flex flex-wrap items-center gap-2 flex-1 justify-end">
           {/* Share Screen / Tab */}
           <button
+            type="button"
             onClick={onStartScreenShare}
             className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
               mediaState.type === 'screen'
@@ -226,24 +228,38 @@ export const ReactionMediaControls: React.FC<ReactionMediaControlsProps> = ({
         </div>
       </div>
 
-      {/* Error Badge for CORS / Video Network / Load Failures */}
+      {/* Error Badge for CORS / Video Network / Screen Share Policy Failures */}
       {mediaError && (
-        <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 bg-red-950/70 border border-red-800/90 rounded-xl text-xs text-red-200">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5 bg-red-950/70 border border-red-800/90 rounded-xl text-xs text-red-200">
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
             <div>
-              <span className="font-bold text-red-300">Video URL Error: </span>
+              <span className="font-bold text-red-300">Media / Screen Share Error: </span>
               <span className="text-red-200/90">{mediaError}</span>
             </div>
           </div>
-          {onClearError && (
-            <button
-              onClick={onClearError}
-              className="text-xs text-red-400 hover:text-white px-2 py-0.5 rounded bg-red-900/50 hover:bg-red-800/80 transition-colors cursor-pointer shrink-0"
-            >
-              Dismiss
-            </button>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {(mediaError.includes('display-capture') || mediaError.includes('permissions policy')) && (
+              <a
+                href={typeof window !== 'undefined' ? window.location.href : '/'}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs bg-purple-600 hover:bg-purple-500 text-white px-2.5 py-1 rounded font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <ExternalLink className="w-3 h-3" />
+                Open in New Tab
+              </a>
+            )}
+            {onClearError && (
+              <button
+                type="button"
+                onClick={onClearError}
+                className="text-xs text-red-400 hover:text-white px-2 py-0.5 rounded bg-red-900/50 hover:bg-red-800/80 transition-colors cursor-pointer shrink-0"
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -365,15 +381,15 @@ export const ReactionMediaControls: React.FC<ReactionMediaControlsProps> = ({
               </button>
 
               <button
-                onClick={() => onSelectLayout('side-by-side')}
+                onClick={() => onSelectLayout('solo-host')}
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                  activeLayout === 'side-by-side'
+                  activeLayout === 'solo-host'
                     ? 'bg-blue-600 text-white shadow-md'
                     : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800'
                 }`}
-                title="Reset to standard side-by-side split"
+                title="Switch to Host Solo camera view"
               >
-                Standard Dual (50/50)
+                Host Solo
               </button>
             </div>
           </div>
@@ -382,7 +398,7 @@ export const ReactionMediaControls: React.FC<ReactionMediaControlsProps> = ({
         <div className="flex items-center justify-between text-xs text-slate-400 p-2.5 bg-slate-950/40 rounded-xl border border-slate-800/60">
           <p className="flex items-center gap-1.5">
             <Tv className="w-3.5 h-3.5 text-purple-400" />
-            Want to react to a YouTube video or slide deck? Click <strong className="text-purple-300">"Share Screen / Tab"</strong> or upload a video file above.
+            Share a screen/tab or upload a video file above to automatically show both your webcam and the video together for your audience.
           </p>
           <span className="font-mono text-[11px] text-slate-500">STANDBY</span>
         </div>

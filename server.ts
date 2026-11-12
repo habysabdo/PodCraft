@@ -195,6 +195,13 @@ async function startServer() {
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   app.use(express.json({ limit: '20mb' }));
+  app.use((_req, res, next) => {
+    res.setHeader(
+      'Permissions-Policy',
+      'camera=(self), microphone=(self), display-capture=(self)'
+    );
+    next();
+  });
 
   // Initialize Gemini API client with server-side API key and required user-agent
   const ai = new GoogleGenAI({
@@ -385,7 +392,7 @@ async function startServer() {
         transcript = '',
         markers = [],
         hostName = 'Host',
-        guestName = 'Guest',
+        guestName = '',
       } = req.body;
 
       if (!process.env.GEMINI_API_KEY) {
@@ -399,19 +406,27 @@ async function startServer() {
       const secs = Math.floor(duration % 60);
       const formattedDuration = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 
+      const hasGuest = Boolean(guestName && String(guestName).trim().length > 0);
+      const speakerContext = hasGuest
+        ? `Host: "${hostName}"\nGuest: "${guestName}"`
+        : `Host: "${hostName}" (Solo Host / Reaction Broadcast)`;
+      const fallbackTranscript = hasGuest
+        ? `The host (${hostName}) and guest (${guestName}) conducted an engaging, deep-dive discussion focusing on "${topic}".`
+        : `The host (${hostName}) delivered an engaging solo commentary and reaction broadcast focusing on "${topic}", sharing technical insights, actionable frameworks, and key takeaways.`;
+      const quoteAttribution = hasGuest ? `either ${hostName} or ${guestName}` : `${hostName}`;
+
       // Build context prompt
       const prompt = `You are an elite podcast producer and editorial show-notes writer for top-charting podcasts.
 Analyze the following recorded podcast episode details and transcript/discussion notes:
 
 Podcast Name: "${podcastName}"
-Host: "${hostName}"
-Guest: "${guestName}"
+${speakerContext}
 Episode Topic/Theme: "${topic}"
 Recorded Duration: ${formattedDuration}
 Recorded Chapter Markers: ${JSON.stringify(markers)}
 
 Transcript / Live Discussion Notes:
-${transcript && transcript.trim().length > 0 ? transcript : `The host (${hostName}) and guest (${guestName}) conducted an engaging, deep-dive discussion focusing on "${topic}". They shared personal anecdotes, technical insights, actionable frameworks, and projected upcoming industry trends while answering listener challenges.`}
+${transcript && transcript.trim().length > 0 ? transcript : fallbackTranscript}
 
 Generate a comprehensive, high-engagement set of show notes in structured JSON according to the schema provided:
 1. episodeTitle: A compelling, clickable, high-retention title for this episode.
@@ -419,7 +434,7 @@ Generate a comprehensive, high-engagement set of show notes in structured JSON a
 3. summary: Exactly 3 polished, cohesive sentences summarizing the core discussion, the stakes, and the primary conclusion.
 4. keyTakeaways: An array of 4 to 6 concise, bulleted key discussion points and insights.
 5. timestamps: An array of chapters with timestamp (format "MM:SS"), catchy chapter title, and 1-sentence description. Spread realistic timestamps across the ${formattedDuration} duration.
-6. memorableQuotes: An array of 2 to 3 standout quotes attributed to either ${hostName} or ${guestName}.
+6. memorableQuotes: An array of 2 to 3 standout quotes attributed to ${quoteAttribution}.
 7. socialPromo: A ready-to-share announcement post for Twitter/X and LinkedIn with hashtags.`;
 
       const callGemini = async (modelName: string) => {

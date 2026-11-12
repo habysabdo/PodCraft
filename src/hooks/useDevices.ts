@@ -54,6 +54,20 @@ export function useDevices() {
     }
   }, []);
 
+  // Clear error and mark permission granted once getUserMedia succeeds
+  const clearError = useCallback(() => {
+    setError(null);
+  }, []);
+
+  const markPermissionGranted = useCallback(() => {
+    setPermissionGranted(true);
+    setError(null);
+  }, []);
+
+  const setPermissionError = useCallback((message: string | null) => {
+    setError(message);
+  }, []);
+
   // Request real camera and microphone permissions via getUserMedia
   const requestPermissions = useCallback(async () => {
     try {
@@ -74,9 +88,9 @@ export function useDevices() {
     }
   }, [refreshDevices]);
 
-  // Request permissions automatically on initial mount and listen for hardware changes
+  // Enumerate devices on mount and listen for hardware changes (camera auto-start is handled via permissions.query in App)
   useEffect(() => {
-    requestPermissions();
+    refreshDevices();
 
     if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
       navigator.mediaDevices.addEventListener('devicechange', refreshDevices);
@@ -84,7 +98,7 @@ export function useDevices() {
         navigator.mediaDevices.removeEventListener('devicechange', refreshDevices);
       };
     }
-  }, [requestPermissions, refreshDevices]);
+  }, [refreshDevices]);
 
   // Acquire real video stream from physical hardware device or screen share
   const acquireVideoStream = useCallback(
@@ -143,6 +157,9 @@ export function useDevices() {
     audioDevices,
     permissionGranted,
     error,
+    clearError,
+    markPermissionGranted,
+    setPermissionError,
     requestPermissions,
     refreshDevices,
     acquireVideoStream,
