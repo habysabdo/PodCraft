@@ -1280,8 +1280,10 @@ export default function App() {
           </div>
         )}
 
-        {/* 1. Main Broadcast Canvas Viewport */}
-        <section>
+        {/* 1. Main Broadcast Canvas Viewport — capped at 960px wide so the
+            preview doesn't swallow the whole screen; the canvas backing store
+            stays 1920x1080, so recording quality is unchanged. */}
+        <section className="max-w-[960px] mx-auto w-full">
           <BroadcastCanvasView
             canvasRef={canvasRef}
             hostVideoRef={hostVideoRef}
