@@ -27,7 +27,11 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["Room"]
+# Free plan REQUIRES sqlite-backed Durable Objects: 'new_classes' creates a
+# classic namespace (paid plans only) and the deploy fails with code 10097.
+# 'new_sqlite_classes' is the free-plan path; Room only uses the key-value
+# storage API + WebSockets, which work unchanged on SQLite-backed objects.
+new_sqlite_classes = ["Room"]
 
 # D1 database — episode records (one row per YouTube publish: title, video
 # link, show notes). Created in the dashboard as "podcraft-db"; the binding
