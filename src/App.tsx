@@ -205,6 +205,14 @@ export default function App() {
     };
   }, [isStandalone, isIOS, installPromptDismissed]);
 
+  // Fallback: if the install event never fires (some browsers never fire it),
+  // still ask after a short delay — the Download button then uses the APK link.
+  useEffect(() => {
+    if (isStandalone || installPromptDismissed) return;
+    const t = window.setTimeout(() => setShowInstallPrompt(true), 2500);
+    return () => window.clearTimeout(t);
+  }, [isStandalone, installPromptDismissed]);
+
   const handleInstallClick = async () => {
     if (installPromptEvent) {
       installPromptEvent.prompt();
