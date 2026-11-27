@@ -14,6 +14,9 @@ import {
   ExternalLink,
   Download,
   Smartphone,
+  Share2,
+  Copy,
+  Check,
   X,
 } from 'lucide-react';
 import {
@@ -42,6 +45,11 @@ import { detectAndParseMediaUrl } from './utils/urlDetector';
  *  once PodCraft is listed there. */
 const APK_DOWNLOAD_URL =
   'https://muse.ai/files/1251299638058384/2019610725402278/ygs5elhql6zg5akwt7yfbnds/podcraft-v1.0.0-universal.apk';
+
+/** The link people share — the PodCraft web app. */
+const SHARE_URL = 'https://podcraft.hanysabdo83.workers.dev/';
+const SHARE_TEXT =
+  'Try PodCraft — easy video podcast studio: https://podcraft.hanysabdo83.workers.dev/';
 
 const DEFAULT_FILTERS: VideoFilterSettings = {
   brightness: 100,
@@ -163,6 +171,8 @@ export default function App() {
   const [installPromptEvent, setInstallPromptEvent] = useState<any | null>(null);
   const [showInstallPrompt, setShowInstallPrompt] = useState(false);
   const [installPromptDismissed, setInstallPromptDismissed] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const isStandalone =
     typeof window !== 'undefined' &&
     (window.matchMedia('(display-mode: standalone)').matches ||
@@ -229,6 +239,21 @@ export default function App() {
     // Fallback: direct APK download.
     window.open(APK_DOWNLOAD_URL, '_blank');
     setShowInstallPrompt(false);
+  };
+
+  const copyShareLink = async () => {
+    try {
+      await navigator.clipboard.writeText(SHARE_URL);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = SHARE_URL;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    setLinkCopied(true);
+    window.setTimeout(() => setLinkCopied(false), 2000);
   };
 
   // Clean up object URLs on unmount to free client device memory
@@ -1254,6 +1279,16 @@ export default function App() {
               Get the app
             </button>
           )}
+          {/* Share — QR code + link to send PodCraft around */}
+          <button
+            type="button"
+            onClick={() => setShowShareModal(true)}
+            className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md transition-all cursor-pointer whitespace-nowrap shrink-0"
+            title="Share PodCraft — QR code and link"
+          >
+            <Share2 className="w-3.5 h-3.5" />
+            Share
+          </button>
           {!permissionGranted && (
             <button
               onClick={() => startCamera()}
@@ -1601,6 +1636,74 @@ export default function App() {
             >
               Not now
             </button>
+          </div>
+        </div>
+      )}
+
+      {showShareModal && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full shadow-2xl p-5 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30 shrink-0">
+                <Share2 className="w-6 h-6 text-white" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="font-bold text-white text-base">Share PodCraft</h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Send it to a friend — they scan the code or tap the link.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowShareModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                title="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <img
+              src="/qr.png"
+              alt="PodCraft QR code — scan to open the app"
+              className="w-56 h-56 mx-auto rounded-xl bg-white p-2"
+            />
+            <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2">
+              <span className="text-xs text-slate-300 truncate flex-1">{SHARE_URL}</span>
+              <button
+                onClick={copyShareLink}
+                className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 shrink-0 cursor-pointer"
+              >
+                {linkCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                {linkCopied ? 'Copied!' : 'Copy link'}
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <a
+                href={`https://wa.me/?text=${encodeURIComponent(SHARE_TEXT)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 cursor-pointer"
+              >
+                WhatsApp
+              </a>
+              <a
+                href={`sms:?body=${encodeURIComponent(SHARE_TEXT)}`}
+                className="py-2.5 px-3 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 cursor-pointer"
+              >
+                Text message
+              </a>
+            </div>
+            {typeof navigator !== 'undefined' && 'share' in navigator && (
+              <button
+                onClick={() =>
+                  navigator
+                    .share({ title: 'PodCraft', text: SHARE_TEXT, url: SHARE_URL })
+                    .catch(() => {})
+                }
+                className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white rounded-xl font-bold text-sm cursor-pointer"
+              >
+                More share options
+              </button>
+            )}
           </div>
         </div>
       )}
