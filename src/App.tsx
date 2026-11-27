@@ -12,6 +12,9 @@ import {
   CheckCircle,
   ScrollText,
   ExternalLink,
+  Download,
+  Smartphone,
+  X,
 } from 'lucide-react';
 import {
   ChannelConfig,
@@ -33,6 +36,12 @@ import { ShowNotesModal } from './components/ShowNotesModal';
 import { ReactionMediaControls } from './components/ReactionMediaControls';
 import { TeleprompterOverlay, TeleprompterFontSize } from './components/TeleprompterOverlay';
 import { detectAndParseMediaUrl } from './utils/urlDetector';
+
+/** Direct APK download — fallback when the browser offers no install prompt.
+ *  Muse-storage link: it expires, so replace it with the Play Store link
+ *  once PodCraft is listed there. */
+const APK_DOWNLOAD_URL =
+  'https://muse.ai/files/1251299638058384/2019610725402278/ygs5elhql6zg5akwt7yfbnds/podcraft-v1.0.0-universal.apk';
 
 const DEFAULT_FILTERS: VideoFilterSettings = {
   brightness: 100,
@@ -146,6 +155,73 @@ export default function App() {
   const [currentRecordingFilename, setCurrentRecordingFilename] = useState('Podcast_Recording.webm');
   const previousRecordedUrlRef = useRef<string | null>(null);
   const lastRecordingDurationRef = useRef(0);
+
+  // ---- "Download the app?" prompt (PWA install) ----
+  // When the web app opens in a browser (not already installed), ask whether
+  // to download/install PodCraft on the phone. "Not now" hides it until the
+  // next fresh open — it asks on every open until the app is installed.
+  const [installPromptEvent, setInstallPromptEvent] = useState<any | null>(null);
+  const [showInstallPrompt, setShowInstallPrompt] = useState(false);
+  const [installPromptDismissed, setInstallPromptDismissed] = useState(false);
+  const isStandalone =
+    typeof window !== 'undefined' &&
+    (window.matchMedia('(display-mode: standalone)').matches ||
+      (navigator as any).standalone === true);
+  const isIOS =
+    typeof navigator !== 'undefined' &&
+    (/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
+  useEffect(() => {
+    if (isStandalone) return;
+    // The event may already have fired before React mounted (captured in main.tsx).
+    const existing = (window as any).__podcraftInstallPrompt;
+    if (existing) {
+      setInstallPromptEvent(existing);
+      if (!installPromptDismissed) setShowInstallPrompt(true);
+    }
+    const onInstallReady = () => {
+      const ev = (window as any).__podcraftInstallPrompt;
+      if (ev) {
+        setInstallPromptEvent(ev);
+        if (!installPromptDismissed) setShowInstallPrompt(true);
+      }
+    };
+    const onAppInstalled = () => {
+      setInstallPromptEvent(null);
+      setShowInstallPrompt(false);
+    };
+    window.addEventListener('podcraft-install-ready', onInstallReady);
+    window.addEventListener('appinstalled', onAppInstalled);
+    // iOS has no install-prompt event — still ask, with Add-to-Home-Screen steps.
+    let iosTimer: number | undefined;
+    if (isIOS && !installPromptDismissed) {
+      iosTimer = window.setTimeout(() => setShowInstallPrompt(true), 1200);
+    }
+    return () => {
+      window.removeEventListener('podcraft-install-ready', onInstallReady);
+      window.removeEventListener('appinstalled', onAppInstalled);
+      if (iosTimer !== undefined) window.clearTimeout(iosTimer);
+    };
+  }, [isStandalone, isIOS, installPromptDismissed]);
+
+  const handleInstallClick = async () => {
+    if (installPromptEvent) {
+      installPromptEvent.prompt();
+      try {
+        await installPromptEvent.userChoice;
+      } catch {
+        /* dismissed — nothing to do */
+      }
+      setInstallPromptEvent(null);
+      setShowInstallPrompt(false);
+      return;
+    }
+    if (isIOS) return; // iOS shows the Add-to-Home-Screen steps instead.
+    // Fallback: direct APK download.
+    window.open(APK_DOWNLOAD_URL, '_blank');
+    setShowInstallPrompt(false);
+  };
 
   // Clean up object URLs on unmount to free client device memory
   useEffect(() => {
@@ -1158,6 +1234,18 @@ export default function App() {
 
         {/* Top Toolbar Controls */}
         <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+          {/* Get the app — download/install PodCraft on the phone */}
+          {!isStandalone && (
+            <button
+              type="button"
+              onClick={() => setShowInstallPrompt(true)}
+              className="px-3.5 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:brightness-110 active:scale-95 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer whitespace-nowrap shrink-0"
+              title="Download the PodCraft app on your phone"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Get the app
+            </button>
+          )}
           {!permissionGranted && (
             <button
               onClick={() => startCamera()}
@@ -1454,6 +1542,60 @@ export default function App() {
           </section>
         )}
       </main>
+
+      {/* Download the app? — asks when the web app opens */}
+      {showInstallPrompt && !isStandalone && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full shadow-2xl p-5 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30 shrink-0">
+                <Smartphone className="w-6 h-6 text-white" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="font-bold text-white text-base">Download the PodCraft app?</h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Get PodCraft on your home screen — it opens full-screen, no browser bar.
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setShowInstallPrompt(false);
+                  setInstallPromptDismissed(true);
+                }}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                title="Not now"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {isIOS ? (
+              <div className="text-xs text-slate-300 space-y-1.5 bg-slate-950 border border-slate-800 rounded-xl p-3 leading-relaxed">
+                <p className="font-bold text-white">On your iPhone:</p>
+                <p>1. Tap the Share button below.</p>
+                <p>2. Tap &ldquo;Add to Home Screen&rdquo;.</p>
+                <p>3. Tap &ldquo;Add&rdquo; — PodCraft appears on your home screen.</p>
+              </div>
+            ) : (
+              <button
+                onClick={handleInstallClick}
+                className="w-full py-3 px-4 bg-gradient-to-r from-indigo-600 to-purple-600 hover:brightness-110 active:scale-[0.98] text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                Download the app
+              </button>
+            )}
+            <button
+              onClick={() => {
+                setShowInstallPrompt(false);
+                setInstallPromptDismissed(true);
+              }}
+              className="w-full py-2.5 text-slate-400 hover:text-white text-sm font-semibold transition-colors cursor-pointer"
+            >
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Recording Complete & Download Video Modal */}
       <RecordingReviewModal
