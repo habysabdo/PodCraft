@@ -1717,6 +1717,8 @@ export default function App() {
         durationSeconds={lastRecordingDurationRef.current || recordingSeconds}
         filename={currentRecordingFilename}
         onGenerateShowNotes={() => setShowNotesModal(true)}
+        transcriptEntries={transcriptEntries}
+        chapterMarkers={chapterMarkers}
       />
 
       {/* Gemini AI Show Notes Modal */}
