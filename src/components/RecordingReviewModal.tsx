@@ -65,8 +65,8 @@ export const RecordingReviewModal: React.FC<RecordingReviewModalProps> = ({
   durationSeconds,
   filename,
   onGenerateShowNotes,
-  transcriptEntries,
-  chapterMarkers,
+  transcriptEntries = [],
+  chapterMarkers = [],
   showNotes,
 }) => {
   const [downloadSuccess, setDownloadSuccess] = useState(false);
