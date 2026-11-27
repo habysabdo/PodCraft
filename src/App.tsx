@@ -619,13 +619,7 @@ export default function App() {
         setHasRecordedSession(true);
         lastRecordingDurationRef.current = recordingSeconds;
 
-        // Instant local browser download directly to user's device storage
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        // No auto-download here: the Review modal asks first ("Want to download this recording?").
       };
 
       recorder.start(1000);
@@ -1147,8 +1141,8 @@ export default function App() {
       />
 
       {/* Broadcast Studio Top Navbar */}
-      <header className="border-b border-slate-800/80 bg-slate-950/90 backdrop-blur sticky top-0 z-40 px-4 lg:px-6 py-3 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3 shrink-0">
+      <header className="border-b border-slate-800/80 bg-slate-950/90 backdrop-blur sticky top-0 z-40 px-4 lg:px-6 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex items-center gap-3 shrink-0 min-w-0">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
             <Radio className="w-5 h-5 text-white" />
           </div>
@@ -1156,14 +1150,14 @@ export default function App() {
             <h1 className="font-extrabold text-base tracking-tight text-white whitespace-nowrap">
               PodCraft Studio
             </h1>
-            <p className="text-[11px] text-slate-400 whitespace-nowrap">
+            <p className="text-[11px] text-slate-400 leading-tight">
               Single-Host Reaction & Teleprompter Broadcast Studio
             </p>
           </div>
         </div>
 
         {/* Top Toolbar Controls */}
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
           {!permissionGranted && (
             <button
               onClick={() => startCamera()}

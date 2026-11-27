@@ -821,6 +821,11 @@ export const RecordingReviewModal: React.FC<RecordingReviewModalProps> = ({
             </div>
           )}
 
+          {/* Ask first: download this recording to the device? */}
+          <p className="text-center text-sm font-semibold text-slate-200 pt-1">
+            Want to download this recording to your device?
+          </p>
+
           {/* Action Buttons: Save to Device & Generate AI Show Notes */}
           <div className="flex flex-col sm:flex-row items-center gap-3 pt-1">
             <button

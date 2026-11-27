@@ -155,7 +155,7 @@ export const ReactionMediaControls: React.FC<ReactionMediaControlsProps> = ({
           </button>
 
           {/* Link Input Bar: Embed & React */}
-          <form onSubmit={handleUrlSubmit} className="flex items-center gap-1.5 flex-1 min-w-[280px] max-w-lg">
+          <form onSubmit={handleUrlSubmit} className="flex items-center gap-1.5 w-full sm:flex-1 sm:min-w-[280px] sm:max-w-lg">
             <div className="relative flex-1">
               <Link className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
