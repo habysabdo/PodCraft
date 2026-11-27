@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "live.podcraft.app",
+      "sha256_cert_fingerprints": [
+        "D9:4E:5B:FC:2D:CF:C0:2E:11:F6:4C:4A:ED:3E:2A:C2:74:99:FC:54:57:6D:2D:0C:AC:38:49:FD:7B:00:1A:30"
+      ]
+    }
+  }
+]
